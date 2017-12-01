@@ -81,8 +81,8 @@ NDArray NDArray::ReshapeWithRecord(const TShape &shape) {
   NDArray ret = this->Reshape(shape);
   if (!Imperative::Get()->is_recording()) return ret;
 
-  CHECK_GE(shape_.Size(), shape.Size())
-    << "NDArray.Reshape: target shape must have must have the same size as "
+  CHECK_EQ(shape_.Size(), shape.Size())
+    << "NDArray.Reshape: target shape must have the same size as "
     << "current shape when recording with autograd.";
   nnvm::NodeAttrs attrs;
   attrs.op = nnvm::Op::Get("Reshape");;
@@ -505,10 +505,6 @@ void CopyFromToImpl(const NDArray& from, const NDArray& to, RunContext rctx) {
       LOG(FATAL) << "unknown storage type" << to_stype;
     }
   }
-  if (is_same<from_xpu, mshadow::gpu>::value || is_same<to_xpu, mshadow::gpu>::value) {
-    // Wait GPU kernel to complete
-    rctx.get_stream<gpu>()->Wait();
-  }
 }
 
 void CopyFromTo(const NDArray& from, const NDArray& to, int priority) {
@@ -540,6 +536,7 @@ void CopyFromTo(const NDArray& from, const NDArray& to, int priority) {
       Engine::Get()->PushAsync(
         [from, to](RunContext ctx, Engine::CallbackOnComplete on_complete) {
           CopyFromToImpl<cpu, gpu>(from, to, ctx);
+          ctx.get_stream<gpu>()->Wait();
           on_complete();
         }, to.ctx(), const_vars, {to.var()},
         FnProperty::kCopyToGPU, priority, PROFILER_MESSAGE("CopyCPU2GPU"));
@@ -547,6 +544,7 @@ void CopyFromTo(const NDArray& from, const NDArray& to, int priority) {
       Engine::Get()->PushAsync(
         [from, to](RunContext ctx, Engine::CallbackOnComplete on_complete) {
           CopyFromToImpl<gpu, cpu>(from, to, ctx);
+          ctx.get_stream<gpu>()->Wait();
           on_complete();
         }, from.ctx(), const_vars, {to.var()},
         FnProperty::kCopyFromGPU, priority, PROFILER_MESSAGE("CopyGPU2CPU"));
@@ -554,6 +552,7 @@ void CopyFromTo(const NDArray& from, const NDArray& to, int priority) {
       Engine::Get()->PushAsync(
         [from, to](RunContext ctx, Engine::CallbackOnComplete on_complete) {
           CopyFromToImpl<gpu, gpu>(from, to, ctx);
+          ctx.get_stream<gpu>()->Wait();
           on_complete();
         }, from.ctx(), const_vars, {to.var()},
         from.dtype() != to.dtype() ? FnProperty::kNormal : FnProperty::kCopyFromGPU,

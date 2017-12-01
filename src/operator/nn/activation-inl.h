@@ -24,8 +24,8 @@
  * \author Bing Xu
 */
 
-#ifndef MXNET_OPERATOR_ACTIVATION_INL_H_
-#define MXNET_OPERATOR_ACTIVATION_INL_H_
+#ifndef MXNET_OPERATOR_NN_ACTIVATION_INL_H_
+#define MXNET_OPERATOR_NN_ACTIVATION_INL_H_
 
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
@@ -35,8 +35,8 @@
 #include <string>
 #include <vector>
 #include <utility>
-#include "./operator_common.h"
-#include "./mxnet_op.h"
+#include "../operator_common.h"
+#include "../mxnet_op.h"
 
 namespace mxnet {
 namespace op {
@@ -110,7 +110,7 @@ class ActivationOp : public Operator {
     if (sz) {
       MXNET_ASSIGN_REQ_SWITCH(req[activation::kData], Req, {
         mxnet_op::Kernel<mxnet_op::op_with_req<
-          mxnet::op::mxnet_op::backward_grad<BackwardOp>, Req>, xpu>::Launch(
+          mxnet::op::mxnet_op::backward_grad_tuned<BackwardOp>, Req>, xpu>::Launch(
           s, sz,
           m_in_grad.dptr<DType>(),
           m_out_grad.dptr<DType>(),
@@ -215,4 +215,4 @@ class ActivationProp : public OperatorProperty {
 #endif  // DMLC_USE_CXX11
 }  // namespace op
 }  // namespace mxnet
-#endif  // MXNET_OPERATOR_ACTIVATION_INL_H_
+#endif  // MXNET_OPERATOR_NN_ACTIVATION_INL_H_
