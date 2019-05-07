@@ -19,7 +19,7 @@
 
 /*!
  * Copyright (c) 2017 by Contributors
- * \file sampling_op.h
+ * \file multisample_op.h
  * \brief Function definitions of operators for sampling from multiple distributions
  */
 #ifndef MXNET_OPERATOR_RANDOM_MULTISAMPLE_OP_H_
@@ -38,11 +38,11 @@ namespace mxnet {
 namespace op {
 
 struct MultiSampleParam : public dmlc::Parameter<MultiSampleParam> {
-  TShape shape;
+  mxnet::TShape shape;
   int dtype;
   DMLC_DECLARE_PARAMETER(MultiSampleParam) {
     DMLC_DECLARE_FIELD(shape)
-      .set_default(TShape())
+      .set_default(mxnet::TShape())
       .describe("Shape to be sampled from each random distribution.");
     DMLC_DECLARE_FIELD(dtype)
     .add_enum("None", -1)
@@ -56,8 +56,8 @@ struct MultiSampleParam : public dmlc::Parameter<MultiSampleParam> {
 };
 
 inline bool MultiSampleOpShape(const nnvm::NodeAttrs& attrs,
-                               std::vector<TShape>* in_attrs,
-                               std::vector<TShape>* out_attrs) {
+                               mxnet::ShapeVector* in_attrs,
+                               mxnet::ShapeVector* out_attrs) {
   CHECK_GT(in_attrs->size(), 0)
     << "sampling operator takes 1 or 2 arguments (" << in_attrs->size() << " given)";
   CHECK_LT(in_attrs->size(), 3)
@@ -65,21 +65,21 @@ inline bool MultiSampleOpShape(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(out_attrs->size(), 1);
   // Get shape to be sampled for each parameter set.
   const MultiSampleParam& param = nnvm::get<MultiSampleParam>(attrs.parsed);
-  TShape sshape = param.shape;
-  for (size_t i = 0; i < sshape.ndim(); ++i) {
+  mxnet::TShape sshape = param.shape;
+  for (int i = 0; i < sshape.ndim(); ++i) {
     CHECK_GT(sshape[i], 0) << "shape parameter must be non-zero within each dimension";
   }
   // Examine output shape whether it is already defined.
-  TShape tshape((*out_attrs)[0]);
+  mxnet::TShape tshape((*out_attrs)[0]);
   // The illegal case of tshape.ndim() <= sshape.ndim() will
   // automatically crash when we back-propagate from inputs to outputs.
   if (tshape.ndim() > sshape.ndim()) {
     // Promote down by removing last dimensions which represent the samples.
-    tshape = TShape(tshape.begin(), tshape.begin()+(tshape.ndim()-sshape.ndim()));
+    tshape = mxnet::TShape(tshape.begin(), tshape.begin()+(tshape.ndim()-sshape.ndim()));
   }
   // Shape assignemnt/checking for inputs.
-  for (size_t i = 0; i < in_attrs->size(); ++i) {
-    if ( !shape_assign(&tshape, (*in_attrs)[i])) return false;
+  for (const auto& in_attr : *in_attrs) {
+    if ( !shape_assign(&tshape, in_attr)) return false;
   }
   for (size_t i = 0; i < in_attrs->size(); ++i) {
     SHAPE_ASSIGN_CHECK(*in_attrs, i, tshape);
@@ -88,7 +88,7 @@ inline bool MultiSampleOpShape(const nnvm::NodeAttrs& attrs,
     // Shape assignment/check for propagation from inputs to output.
     std::vector<int> cshape(tshape.begin(), tshape.end());
     cshape.insert(cshape.end(), sshape.begin(), sshape.end());
-    TShape oshape(cshape.begin(), cshape.end());
+    mxnet::TShape oshape(cshape.begin(), cshape.end());
     SHAPE_ASSIGN_CHECK(*out_attrs, 0, oshape);
   }
   return true;
@@ -105,8 +105,8 @@ inline bool MultiSampleOpType(const nnvm::NodeAttrs& attrs,
 
   // All inputs must have same type.
   int dtype = -1;
-  for (size_t i = 0; i < in_attrs->size(); ++i) {
-    if (!type_assign(&dtype, (*in_attrs)[i])) return false;
+  for (int in_attr : *in_attrs) {
+    if (!type_assign(&dtype, in_attr)) return false;
   }
   for (size_t i = 0; i < in_attrs->size(); ++i) {
     TYPE_ASSIGN_CHECK(*in_attrs, i, dtype);
@@ -135,6 +135,8 @@ inline bool MultiSampleOpType(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
+using namespace mxnet::common::random;
+
 template<typename xpu, typename IType, typename OType, typename Sampler, int inum>
 struct SamplerCaller;
 
@@ -142,12 +144,12 @@ template<typename xpu, typename IType, typename OType, typename Sampler>
 struct SamplerCaller<xpu, IType, OType, Sampler, 1> {
   static void op(const std::vector<TBlob>& inputs,
                  const std::vector<TBlob>& outputs,
-                 const Tensor<xpu, 1, unsigned int>& seeds,
-                       mshadow::Stream<xpu> *s) {
+                 RandGenerator<xpu, OType> *pgen,
+                 mshadow::Stream<xpu> *s) {
     Sampler sampler;
     sampler.Sample(inputs[0].FlatTo1D<xpu, IType>(s),
                    outputs[0].FlatTo1D<xpu, OType>(s),
-                   seeds, s);
+                   pgen, s);
   }
 };
 
@@ -155,13 +157,13 @@ template<typename xpu, typename IType, typename OType, typename Sampler>
 struct SamplerCaller<xpu, IType, OType, Sampler, 2> {
   static void op(const std::vector<TBlob>& inputs,
                  const std::vector<TBlob>& outputs,
-                 const Tensor<xpu, 1, unsigned int>& seeds,
-                       mshadow::Stream<xpu> *s) {
+                 RandGenerator<xpu, OType> *pgen,
+                 mshadow::Stream<xpu> *s) {
     Sampler sampler;
     sampler.Sample(inputs[0].FlatTo1D<xpu, IType>(s),
                    inputs[1].FlatTo1D<xpu, IType>(s),
                    outputs[0].FlatTo1D<xpu, OType>(s),
-                   seeds, s);
+                   pgen, s);
   }
 };
 
@@ -177,15 +179,10 @@ void MultiSampleOpForward(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(outputs.size(), 1);
   CHECK_GT(inputs[0].Size(), 0);
   mshadow::Stream<xpu> *s = ctx.get_stream<xpu>();
-  // Generate multiple seeds for the different threads.
-  const int nSeeds(OptSampleSeedNum<xpu>(outputs[0].Size()));
-  Tensor<xpu, 1, unsigned> seeds
-    = ctx.requested[1].get_space_typed<xpu, 1, unsigned> (Shape1(nSeeds), ctx.get_stream<xpu>());
-  ctx.requested[0].get_random<xpu, float>(s)->GetRandInt(seeds);
   MSHADOW_TYPE_SWITCH(inputs[0].type_flag_, IType, {
     MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, OType, {
-        SamplerCaller<xpu, IType, OType, Sampler, inum>
-            ::op(inputs, outputs, seeds, s);
+      RandGenerator<xpu, OType> *pgen = ctx.requested[0].get_parallel_random<xpu, OType>();
+      SamplerCaller<xpu, IType, OType, Sampler, inum>::op(inputs, outputs, pgen, s);
     });
   });
 }

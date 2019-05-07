@@ -14,14 +14,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
+"""Create helper functions to load mnist dataset and toy dataset"""
 from __future__ import print_function
-import numpy
 import os
 import ssl
+import numpy
 
 
 def load_mnist(training_num=50000):
+    """Load mnist dataset"""
     data_path = os.path.join(os.path.dirname(os.path.realpath('__file__')), 'mnist.npz')
     if not os.path.isfile(data_path):
         from six.moves import urllib
@@ -29,8 +30,9 @@ def load_mnist(training_num=50000):
             'https://github.com/sxjscience/mxnet/raw/master/example/bayesian-methods/mnist.npz'
         )
         print('Downloading data from %s to %s' % (origin, data_path))
-        context = ssl._create_unverified_context()
-        urllib.request.urlretrieve(origin, data_path, context=context)
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(origin, context=ctx) as u, open(data_path, 'wb') as f:
+            f.write(u.read())
         print('Done!')
     dat = numpy.load(data_path)
     X = (dat['X'][:training_num] / 126.0).astype('float32')

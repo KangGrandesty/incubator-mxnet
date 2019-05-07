@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Use data from S3 for training
 
 AWS S3 is a cloud-based object storage service that allows storage and retrieval of large amounts of data at a very low cost. This makes it an attractive option to store large training datasets. MXNet is deeply integrated with S3 for this purpose.
@@ -15,7 +32,7 @@ Following are detailed instructions on how to use data from S3 for training.
 
 ## Step 1: Build MXNet with S3 integration enabled
 
-Follow instructions [here](http://mxnet.io/get_started/install.html) to install MXNet from source with the following additional steps to enable S3 integration.
+Follow instructions [here](http://mxnet.io/install/index.html) to install MXNet from source with the following additional steps to enable S3 integration.
 
 1. Install `libcurl4-openssl-dev` and `libssl-dev` before building MXNet. These packages are required to read/write from AWS S3.
 2. Append `USE_S3=1` to `config.mk` before building MXNet.

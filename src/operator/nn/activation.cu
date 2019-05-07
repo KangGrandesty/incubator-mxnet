@@ -31,39 +31,84 @@
 
 namespace mxnet {
 namespace op {
-template<>
-Operator *CreateOp<gpu>(ActivationParam param, int dtype, const TShape& dshape) {
-  Operator *op = NULL;
-  // SoftReLU not supported by CUDNN yet
-  if (param.act_type == activation::kSoftReLU) {
-    MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-      op = new ActivationOp<gpu, mshadow_op::softrelu, mshadow_op::softrelu_grad, DType>();
-    })
-    return op;
-  }
 
 #if MXNET_USE_CUDNN == 1
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    op = new CuDNNActivationOp<DType>(param);
-  })
+
+template<typename DType>
+static CuDNNActivationOp<DType> &get_cudnn_op(const ActivationParam& param) {
+#if DMLC_CXX11_THREAD_LOCAL
+  static thread_local CuDNNActivationOp<DType> cudnn_op;
 #else
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    switch (param.act_type) {
-      case activation::kReLU:
-        op = new ActivationOp<gpu, mshadow_op::relu, mshadow_op::relu_grad, DType>();
-        break;
-      case activation::kSigmoid:
-        op = new ActivationOp<gpu, mshadow_op::sigmoid, mshadow_op::sigmoid_grad, DType>();
-        break;
-      case activation::kTanh:
-        op = new ActivationOp<gpu, mshadow_op::tanh, mshadow_op::tanh_grad, DType>();
-        break;
-      default:
-        LOG(FATAL) << "unknown activation";
-    }
-  })
-#endif  // MXNET_USE_CUDNN
-  return op;
+  static MX_THREAD_LOCAL CuDNNActivationOp<DType> cudnn_op;
+#endif
+  cudnn_op.Init(param);
+  return cudnn_op;
 }
+
+template<>
+void ActivationCompute<gpu>(const nnvm::NodeAttrs& attrs,
+    const OpContext& ctx,
+    const std::vector<TBlob>& inputs,
+    const std::vector<OpReqType>& req,
+    const std::vector<TBlob>& outputs) {
+  CHECK_EQ(inputs.size(), 1U);
+  CHECK_EQ(outputs.size(), 1U);
+  const ActivationParam& param = nnvm::get<ActivationParam>(attrs.parsed);
+  const int act_type = param.act_type;
+
+  // SoftReLU and kSoftSign are both not supported by CUDNN yet
+  if (act_type == activation::kSoftReLU) {
+    ActivationForward<gpu, mshadow_op::softrelu, mshadow_op::softrelu_grad>(ctx,
+      inputs[0], req[0], outputs[0]);
+  } else if (act_type == activation::kSoftSign) {
+    ActivationForward<gpu, mshadow_op::softsign, mshadow_op::softsign_grad>(ctx,
+      inputs[0], req[0], outputs[0]);
+  } else {
+    MSHADOW_REAL_TYPE_SWITCH(inputs[0].type_flag_, DType, {
+      get_cudnn_op<DType>(param).Forward(ctx, inputs[0], req[0], outputs[0]);
+    });
+  }
+}
+
+template<>
+void ActivationGradCompute<gpu>(const nnvm::NodeAttrs& attrs,
+                                const OpContext& ctx,
+                                const std::vector<TBlob>& inputs,
+                                const std::vector<OpReqType>& req,
+                                const std::vector<TBlob>& outputs) {
+  const ActivationParam& param = nnvm::get<ActivationParam>(attrs.parsed);
+  const int act_type = param.act_type;
+  CHECK_EQ(inputs.size(), activation::GradNumInputs(act_type));
+  CHECK_EQ(outputs.size(), 1U);
+  CHECK_EQ(req.size(), 1U);
+
+  // both SoftReLU and SoftSign not supported by CUDNN yet
+  if (act_type == activation::kSoftReLU) {
+    ActivationBackward<gpu, mshadow_op::softrelu, mshadow_op::softrelu_grad>(
+      ctx, inputs.at(0), inputs.at(1), req[0], outputs[0]);
+  } else if (act_type == activation::kSoftSign) {
+    ActivationBackward<gpu, mshadow_op::softsign, mshadow_op::softsign_grad>(
+      ctx, inputs.at(0), inputs.at(2), req[0], outputs[0]);
+  } else if (act_type == activation::kReLU) {
+    MSHADOW_REAL_TYPE_SWITCH(inputs.at(0).type_flag_, DType, {
+      // XXX: for y = relu(x), y is passed as "in_data" to Backward()
+      get_cudnn_op<DType>(param).Backward(ctx, inputs.at(0), inputs.at(1),
+                                          inputs.at(1), req[0], outputs[0]);
+    });
+  } else {
+    MSHADOW_REAL_TYPE_SWITCH(inputs.at(0).type_flag_, DType, {
+      get_cudnn_op<DType>(param).Backward(ctx, inputs.at(0), inputs.at(2),
+                                          inputs.at(1), req[0], outputs[0]);
+    });
+  }
+}
+#endif
+
+NNVM_REGISTER_OP(Activation)
+.set_attr<FCompute>("FCompute<gpu>", ActivationCompute<gpu>);
+
+NNVM_REGISTER_OP(_backward_Activation)
+.set_attr<FCompute>("FCompute<gpu>", ActivationGradCompute<gpu>);
+
 }  // namespace op
 }  // namespace mxnet

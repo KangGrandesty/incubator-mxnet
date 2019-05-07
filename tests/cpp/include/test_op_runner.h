@@ -64,7 +64,7 @@ class OperatorRunner {
   test::op::OpInfo<OperatorProp, OperatorExecutor>
   RunGenericOperatorForward(
     bool isGPU,
-    const std::vector<TShape>& inputShapes,
+    const mxnet::ShapeVector& inputShapes,
     const std::vector<std::pair<std::string, std::string> > &kwargs,
     const size_t count = 1) {
 #if MXNET_USE_CUDA
@@ -107,7 +107,7 @@ class OperatorRunner {
    */
   test::op::OpInfo<OperatorProp, OperatorExecutor> RunBidirectional(
     bool isGPU,
-    const std::vector<TShape>& inputShapes,
+    const mxnet::ShapeVector& inputShapes,
     const std::vector<std::pair<std::string, std::string> > &kwargs,
     const size_t count = 1) {
     test::op::OpInfo<OperatorProp, OperatorExecutor> info =
@@ -137,7 +137,8 @@ class OperatorRunner {
              const test::op::kwargs_t& kwargs,
              int dim = 0,
              size_t count = 1,
-             const std::vector<TShape>& timing_shapes = {}) {
+             const mxnet::ShapeVector& timing_shapes = {},
+             bool backward = true) {
     if (mxnet::test::quick_test) {
       total_iterations_ = 2;
       count = 1;
@@ -192,7 +193,7 @@ class OperatorRunner {
           info = RunGenericOperatorForward(isGPU,
                                            !timing_shapes.empty()
                                            ? timing_shapes
-                                           : std::vector<TShape>({TShape({batchSize,
+                                           : mxnet::ShapeVector({mxnet::TShape({batchSize,
                                                                           channels,
                                                                           width})}),
                                            kwargs,
@@ -202,7 +203,7 @@ class OperatorRunner {
           info = RunGenericOperatorForward(isGPU,
                                            !timing_shapes.empty()
                                            ? timing_shapes
-                                           : std::vector<TShape>({ TShape({batchSize,
+                                           : mxnet::ShapeVector({ mxnet::TShape({batchSize,
                                                                            channels,
                                                                            height,
                                                                            width})}),
@@ -213,7 +214,7 @@ class OperatorRunner {
           info = RunGenericOperatorForward(isGPU,
                                            !timing_shapes.empty()
                                            ? timing_shapes
-                                           : std::vector<TShape>({ TShape({batchSize,
+                                           : mxnet::ShapeVector({ mxnet::TShape({batchSize,
                                                                            channels,
                                                                            depth,
                                                                            height,
@@ -225,7 +226,7 @@ class OperatorRunner {
           CHECK(false) << "Unsupported dimension count: " << (D + 1);
       }
       if (info.executor_) {
-        if (info.executor_->HasBackward()) {
+        if (info.executor_->HasBackward() && backward) {
           RunGenericOperatorBackward(&info, count);
         }
         timing += info.executor_->GetTiming();

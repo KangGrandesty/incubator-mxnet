@@ -26,7 +26,12 @@
 #ifndef TEST_TUNE_H_
 #define TEST_TUNE_H_
 
+#ifndef _WIN32
 #include <sys/time.h>
+#else
+#include <Windows.h>
+#endif
+
 #include <dmlc/logging.h>
 #include <iomanip>
 #include <iostream>
@@ -62,7 +67,7 @@ class TuningTester {
 
   using bool_mode_pair = std::pair<bool, ::mxnet::op::tune::TuningMode>;
 
-  using shape_vect = std::vector<TShape>;
+  using shape_vect = mxnet::ShapeVector;
   using shape_vec_to_bool_map = std::map<shape_vect, bool_mode_pair, test::less_shapevect>;
 
  private:
@@ -94,7 +99,7 @@ class TuningTester {
 
     // Do the performance runs
     const char *pu = isGPU ? "GPU" : "CPU";
-    for (const std::vector<TShape> &this_run_shapes : shapes) {
+    for (const mxnet::ShapeVector &this_run_shapes : shapes) {
       test::perf::timing_map_t tmap = runner.TimingTest(std::string(op_name) + " Operator " + pu,
                                                         isGPU, false, kwargs,
                                                         0, calls_per_iteration_,
@@ -184,13 +189,13 @@ class TuningTester {
       if (verbose || test::csv) {
         if (!test::csv) {
           for (size_t x = 0, n = shapes.size(); x < n; ++x) {
-            const TShape &shape = shapes[x];
+            const mxnet::TShape &shape = shapes[x];
             if (x) {
               std::cout << ", ";
             }
             std::cout << shape;
           }
-          const TShape &lhs_shape = shapes[0];
+          const mxnet::TShape &lhs_shape = shapes[0];
           std::cout << " lhs=" << test::pretty_num(lhs_shape.Size()) << " items";
           std::cout << "\t(" << TimingDirectionAsString(direction) << ")" << std::endl;
         } else {

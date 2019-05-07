@@ -151,9 +151,9 @@ method print_summary(
         my $cur_param = 0;
         if($op eq 'Convolution')
         {
-            my $num_filter = $node->{attr}{num_filter};
+            my $num_filter = $node->{attrs}{num_filter};
             $cur_param = $pre_filter * $num_filter;
-            while($node->{attr}{kernel} =~ /(\d+)/g)
+            while($node->{attrs}{kernel} =~ /(\d+)/g)
             {
                 $cur_param *= $1;
             }
@@ -161,7 +161,7 @@ method print_summary(
         }
         elsif($op eq 'FullyConnected')
         {
-            $cur_param = $pre_filter * ($node->{attr}{num_hidden} + 1);
+            $cur_param = $pre_filter * ($node->{attrs}{num_hidden} + 1);
         }
         elsif($op eq 'BatchNorm')
         {
@@ -171,6 +171,10 @@ method print_summary(
                 my $num_filter = $shape_dict{$key}[1];
                 $cur_param = $num_filter * 2;
             }
+        }
+        elsif($op eq 'Embedding')
+        {
+            $cur_param = $node->{attrs}{input_dim} * $node->{attrs}{output_dim};
         }
         my $first_connection;
         if(not $pre_node)
@@ -258,7 +262,6 @@ method print_summary(
         dot object of symbol
 =cut
 
-
 method plot_network(
     AI::MXNet::Symbol       $symbol,
     Str                    :$title='plot',
@@ -290,7 +293,7 @@ method plot_network(
     );
     my $dot = AI::MXNet::Visualization::PythonGraphviz->new(
         graph  => GraphViz->new(name => $title),
-        format => $save_format
+        format => $save_format,
     );
     # color map
     my @cm = (
@@ -308,7 +311,7 @@ method plot_network(
         my $label = $name;
         if($op eq 'null')
         {
-            if($name =~ /(?:_weight|_bias|_beta|_gamma|_moving_var|_moving_mean)$/)
+            if($name =~ /(?:_weight|_bias|_beta|_gamma|_moving_var|_moving_mean|running_var|running_mean)$/)
             {
                 if($hide_weights)
                 {
@@ -321,41 +324,58 @@ method plot_network(
             }
             $attr{shape} = 'ellipse'; # inputs get their own shape
             $label = $name;
+            $label = 'plus' if $label =~ /plus\d+$/;
             $attr{fillcolor} = $cm[0];
         }
         elsif($op eq 'Convolution')
         {
-            my @k = $node->{attr}{kernel} =~ /(\d+)/g;
-            my @stride = ($node->{attr}{stride}//'') =~ /(\d+)/g;
+            my @k = $node->{attrs}{kernel} =~ /(\d+)/g;
+            my @stride = ($node->{attrs}{stride}//'') =~ /(\d+)/g;
             $stride[0] //= 1;
-            $label = "Convolution\n".join('x',@k).'/'.join('x',@stride).", $node->{attr}{num_filter}";
+            $label = "Convolution\n".join('x',@k).'/'.join('x',@stride).", $node->{attrs}{num_filter}";
             $attr{fillcolor} = $cm[1];
         }
         elsif($op eq 'FullyConnected')
         {
-            $label = "FullyConnected\n$node->{attr}{num_hidden}";
+            $label = "FullyConnected\n$node->{attrs}{num_hidden}";
             $attr{fillcolor} = $cm[1];
         }
         elsif($op eq 'BatchNorm')
         {
             $attr{fillcolor} = $cm[3];
+            $label = $op;
+        }
+        elsif($op eq 'Flatten')
+        {
+            $label = $op;
+            $attr{fillcolor} = $cm[5];
+        }
+        elsif($op eq 'elemwise_add' or $op eq 'clip' or $op eq 'Concat')
+        {
+            $label = $op;
+            $attr{fillcolor} = $cm[5];
+        }
+        elsif($op eq 'Dropout')
+        {
+            $label = "$op ($node->{attrs}{p})";
+        }
+        elsif($op eq 'Reshape')
+        {
+            $label = "$op $node->{attrs}{shape}";
+            $attr{fillcolor} = $cm[5];
         }
         elsif($op eq 'Activation' or $op eq 'LeakyReLU')
         {
-            $label = "$op\n$node->{attr}{act_type}";
+            $label = "$op\n$node->{attrs}{act_type}";
             $attr{fillcolor} = $cm[2];
         }
         elsif($op eq 'Pooling')
         {
-            my @k = $node->{attr}{kernel} =~ /(\d+)/g;
-            my @stride = ($node->{attr}{stride}//'') =~ /(\d+)/g;
+            my @k = $node->{attrs}{kernel} =~ /(\d+)/g;
+            my @stride = ($node->{attrs}{stride}//'') =~ /(\d+)/g;
             $stride[0] //= 1;
-            $label = "Pooling\n$node->{attr}{pool_type}, ".join('x',@k).'/'.join('x',@stride);
+            $label = "Pooling\n$node->{attrs}{pool_type}, ".join('x',@k).'/'.join('x',@stride);
             $attr{fillcolor} = $cm[4];
-        }
-        elsif($op eq 'Concat' or $op eq 'Flatten' or $op eq 'Reshape')
-        {
-            $attr{fillcolor} = $cm[5];
         }
         elsif($op eq 'Softmax')
         {
@@ -366,7 +386,7 @@ method plot_network(
             $attr{fillcolor} = $cm[7];
             if($op eq 'Custom')
             {
-                $label = $node->{attr}{op_type};
+                $label = $node->{attrs}{op_type};
             }
         }
         $dot->graph->add_node($name, label => $label, %attr);
@@ -396,11 +416,11 @@ method plot_network(
                     {
                         my $key = $input_name;
                         $key   .= '_output' if $input_node->{op} ne 'null';
-                        if($input_node->{op} ne 'null' and exists $input_node->{attr})
+                        if($input_node->{op} ne 'null' and exists $input_node->{attrs})
                         {
-                            if(ref $input_node->{attr} eq 'HASH' and exists $input_node->{attr}{num_outputs})
+                            if(ref $input_node->{attrs} eq 'HASH' and exists $input_node->{attrs}{num_outputs})
                             {
-                                $key .= ($input_node->{attr}{num_outputs} - 1);
+                                $key .= ($input_node->{attrs}{num_outputs} - 1);
                             }
                         }
                         my $end = @{ $shape_dict{$key} };

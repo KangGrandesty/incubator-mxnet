@@ -45,6 +45,7 @@ namespace op {
 struct DotParam : public dmlc::Parameter<DotParam> {
   bool transpose_a;
   bool transpose_b;
+  dmlc::optional<int> forward_stype;
   DMLC_DECLARE_PARAMETER(DotParam) {
     DMLC_DECLARE_FIELD(transpose_a)
       .describe("If true then transpose the first input before dot.")
@@ -52,6 +53,15 @@ struct DotParam : public dmlc::Parameter<DotParam> {
     DMLC_DECLARE_FIELD(transpose_b)
       .describe("If true then transpose the second input before dot.")
       .set_default(false);
+    DMLC_DECLARE_FIELD(forward_stype)
+      .describe("The desired storage type of the forward output given by user, if the"
+                "combination of input storage types and this hint does not match"
+                "any implemented ones, the dot operator will perform fallback operation"
+                "and still produce an output of the desired storage type.")
+      .add_enum("default", kDefaultStorage)
+      .add_enum("row_sparse", kRowSparseStorage)
+      .add_enum("csr", kCSRStorage)
+      .set_default(dmlc::optional<int>());
   }
 };
 
@@ -69,10 +79,12 @@ void DotForward_(const nnvm::NodeAttrs& attrs,
       << "Binary function only support input/output with the same type";
   CHECK_EQ(outputs[0].type_flag_, inputs[1].type_flag_)
       << "Binary function only support input/output with the same type";
-  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64)
-      << "dot only supports float32 and float64";
-  MSHADOW_SGL_DBL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
-    if (inputs[0].ndim() == 1 && inputs[1].ndim() == 1) {
+  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64 ||
+      (outputs[0].type_flag_ == kFloat16 && ctx.run_ctx.ctx.dev_mask() == mshadow::gpu::kDevMask))
+      << "dot only supports float32/float64 for CPU, and float16/float32/float64 for GPU";
+  MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+    // VectorDot() with fp16 is not supported in mshadow. Dispatch to dot() instead.
+    if (inputs[0].ndim() == 1 && inputs[1].ndim() == 1 && inputs[0].type_flag_ != kFloat16) {
       CHECK_NE(req[0], kAddTo) << "AddTo not yet supported";
       Tensor<xpu, 1, DType> out = outputs[0].get<xpu, 1, DType>(s);
       VectorDot(out,
@@ -129,7 +141,7 @@ void DotBackward_(const nnvm::NodeAttrs& attrs,
   Stream<xpu> *s = ctx.get_stream<xpu>();
   CHECK_NE(req[0], kWriteInplace);
   CHECK_NE(req[1], kWriteInplace);
-  MSHADOW_SGL_DBL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+  MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
     if (inputs[1].ndim() == 1 && inputs[2].ndim() == 1) {
       Tensor<xpu, 1, DType> mout_grad = inputs[0].get<xpu, 1, DType>(s);
       Tensor<xpu, 1, DType> mlhs_data = inputs[1].get<xpu, 1, DType>(s);
@@ -202,40 +214,81 @@ void DotBackward_(const nnvm::NodeAttrs& attrs,
 inline bool DotForwardInferStorageType(const nnvm::NodeAttrs& attrs,
                                        const int dev_mask,
                                        DispatchMode* dispatch_mode,
-                                       std::vector<int> *in_attrs,
-                                       std::vector<int> *out_attrs) {
+                                       std::vector<int>* in_attrs,
+                                       std::vector<int>* out_attrs) {
   CHECK_EQ(in_attrs->size(), 2U);
   CHECK_EQ(out_attrs->size(), 1U);
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
-  // csr has many zero columns, so the result of dot(csr.T, matrix) should be rsp
+  // csr has many zero columns, so the result of dot(csr.T, matrix) should be
+  // rsp
   const auto& lhs_stype = in_attrs->at(0);
   const auto& rhs_stype = in_attrs->at(1);
   auto& out_stype = out_attrs->at(0);
   bool dispatched = false;
   bool only_lhs_transpose = param.transpose_a && !param.transpose_b;
-  bool rhs_rsp_or_dns  = rhs_stype == kRowSparseStorage || rhs_stype == kDefaultStorage;
-  if (!dispatched && lhs_stype == kDefaultStorage && rhs_stype == kDefaultStorage) {
+  bool rhs_rsp_or_dns =
+      rhs_stype == kRowSparseStorage || rhs_stype == kDefaultStorage;
+  bool hint_has_value = param.forward_stype.has_value();
+  NDArrayStorageType target_stype = hint_has_value ?
+                                    static_cast<NDArrayStorageType>(param.forward_stype.value()) :
+                                    kUndefinedStorage;
+  if (!dispatched && lhs_stype == kDefaultStorage &&
+      rhs_stype == kDefaultStorage) {
     // dns, dns -> dns
-    dispatched = storage_type_assign(&out_stype, kDefaultStorage,
-                                     dispatch_mode, DispatchMode::kFCompute);
+    target_stype = hint_has_value ? target_stype : kDefaultStorage;
+    if (target_stype == kDefaultStorage) {
+      dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
+                                       DispatchMode::kFCompute);
+    }
   }
-  if (!dispatched && lhs_stype == kCSRStorage && only_lhs_transpose &&
-      (rhs_stype == kRowSparseStorage || rhs_stype == kDefaultStorage)) {
+  if (!dispatched && lhs_stype == kCSRStorage && only_lhs_transpose && rhs_rsp_or_dns) {
     // csr.T, rsp/dns -> rsp
-    dispatched = storage_type_assign(&out_stype, kRowSparseStorage,
-                                     dispatch_mode, DispatchMode::kFComputeEx);
+    target_stype = hint_has_value ? target_stype : kRowSparseStorage;
+    if (target_stype == kRowSparseStorage) {
+      dispatched = storage_type_assign(&out_stype, kRowSparseStorage,
+                                       dispatch_mode, DispatchMode::kFComputeEx);
+    // csr.T, rsp/dns -> dns
+    } else if (target_stype == kDefaultStorage) {
+      dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
+                                       DispatchMode::kFComputeEx);
+    }
   }
   if (!dispatched && lhs_stype == kCSRStorage && rhs_rsp_or_dns &&
       !param.transpose_a && !param.transpose_b) {
     // csr, rsp/dns -> dns
-    dispatched = storage_type_assign(&out_stype, kDefaultStorage,
-                                     dispatch_mode, DispatchMode::kFComputeEx);
+    target_stype = hint_has_value ? target_stype : kDefaultStorage;
+    if (target_stype == kDefaultStorage) {
+      dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
+                                       DispatchMode::kFComputeEx);
+    }
+  }
+  if (!dispatched && lhs_stype == kDefaultStorage && rhs_stype == kCSRStorage &&
+      !param.transpose_a) {
+    target_stype = hint_has_value ? target_stype : kCSRStorage;
+    if (dev_mask == mshadow::cpu::kDevMask) {
+      // dns, csr -> csr on CPU
+      if (target_stype == kCSRStorage && !param.transpose_b) {
+        dispatched = storage_type_assign(&out_stype, kCSRStorage, dispatch_mode,
+                                         DispatchMode::kFComputeEx);
+      // dns, csr/csr.T -> dns on CPU
+      } else if (target_stype == kDefaultStorage) {
+        dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
+                                         DispatchMode::kFComputeEx);
+      }
+    // dns, csr/csr.T -> dns on GPU
+    } else if (dev_mask == mshadow::gpu::kDevMask) {
+      if (target_stype == kDefaultStorage) {
+        dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode,
+                                         DispatchMode::kFComputeEx);
+      }
+    }
   }
   if (!dispatched) {
-    dispatch_fallback(out_attrs, dispatch_mode);
-    LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
+    target_stype = (target_stype == kUndefinedStorage)? kDefaultStorage : target_stype;
+    dispatched = storage_type_assign(&out_stype, target_stype, dispatch_mode,
+                                     DispatchMode::kFComputeFallback);
   }
-  return true;
+  return dispatched;
 }
 
 inline bool DotBackwardInferStorageType(const nnvm::NodeAttrs& attrs,
@@ -279,11 +332,19 @@ inline bool DotBackwardInferStorageType(const nnvm::NodeAttrs& attrs,
       dispatched = true;
     }
   }
-  if (!dispatched) {
-    dispatch_fallback(out_attrs, dispatch_mode);
-    LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
+  if (!dispatched && !param.transpose_a &&
+      lhs_stype == kDefaultStorage && rhs_stype == kCSRStorage &&
+      ograd_stype == kDefaultStorage) {
+    if (type_assign(&lhs_grad_stype, kDefaultStorage) &&
+        type_assign(&rhs_grad_stype, kDefaultStorage)) {
+      DISPATCH_MODE_ASSIGN_CHECK(dispatch_mode, 0, DispatchMode::kFComputeEx);
+      dispatched = true;
+    }
   }
-  return true;
+  if (!dispatched) {
+    dispatched = dispatch_fallback(out_attrs, dispatch_mode);
+  }
+  return dispatched;
 }
 
 /*!
@@ -528,6 +589,174 @@ struct DotCsrTransRspRspByRowBlocks {
 };
 
 /*!
+ * \brief CPU Kernel of PopulateCsrForNNC
+ * Parallelization by individual rows
+ * Populates the indptr and indices array
+ * based on number of non zero columns
+ */
+struct PopulateCsrForNNC {
+  /*!
+   * \brief
+   * \param i the i-th thread
+   * \param nnc_idx all non zero column indexes
+   * \param indptr_out indptr array for output
+   * \param col_idx_out column indices for output
+   * \param nnc number of non zero columns in the output
+   * \param num_rows_l number of rows in lhs
+   */
+  template <typename IType, typename CType>
+  MSHADOW_CINLINE static void Map(int i, const CType* nnc_idx,
+                                  IType* indptr_out, CType* col_idx_out,
+                                  const nnvm::dim_t nnc,
+                                  const nnvm::dim_t num_rows_l) {
+    const CType start_idx = i * nnc;
+    nnvm::dim_t cur = 0;
+    indptr_out[i] = start_idx;
+    if (static_cast<nnvm::dim_t>(i) == (num_rows_l - 1)) indptr_out[i + 1] = indptr_out[i] + nnc;
+    for (IType idx = start_idx; idx < (start_idx + nnc); idx++) {
+      col_idx_out[idx] = nnc_idx[cur++];
+    }
+  }
+};
+
+/*!
+ * \brief CPU Impl of dot(dns, csr) = csr
+ */
+struct DotDnsCsrCsrByRowBlocks {
+  /*!
+   * \brief
+   * \param i the i-th thread
+   * \param num_rows_r number of rows in rhs
+   * \param num_rows_l number of rows in lhs
+   * \param num_cols number of columns in output
+   * \param nnc number of non zero columns
+   */
+
+  template <typename DType, typename IType, typename CType>
+  MSHADOW_CINLINE static void Map(
+      int i, DType* out, const DType* data_l, const IType* indptr_r,
+      const CType* col_idx_r, const DType* data_r, const nnvm::dim_t seg_len,
+      const IType num_rows_r, const IType num_rows_l,
+      const nnvm::dim_t num_cols, const nnvm::dim_t nnc,
+      const CType* prefix_sum) {
+    using nnvm::dim_t;
+    const dim_t seg_start = i * seg_len;
+    if (seg_start >= num_rows_l) return;
+    const dim_t seg_end = std::min(seg_start + seg_len, num_rows_l);
+
+    for (dim_t j = seg_start; j < seg_end; j++) {
+      for (dim_t k = 0; k < num_rows_r; k++) {
+        const dim_t working_idx = j * num_rows_r + k;
+        const DType val = data_l[working_idx];
+        if (indptr_r[k] == indptr_r[k + 1]) continue;
+        const dim_t row_start = j * nnc;
+        for (dim_t cur = indptr_r[k]; cur < indptr_r[k + 1]; cur++) {
+          dim_t cur_col_idx_r = col_idx_r[cur];
+          const dim_t out_idx = row_start + prefix_sum[cur_col_idx_r] - 1;
+          out[out_idx] += val * data_r[cur];
+        }
+      }
+    }
+  }
+};
+
+/*!
+ * \brief CPU Kernel of dot(dns1, csr) = dns2
+ * Parallelization by row blocks
+ */
+struct DotDnsCsrDnsByRowBlocks {
+  /*!
+   * \brief
+   * \param i           the i-th thread
+   * \param out         output matrix
+   * \param data_l      data of lhs
+   * \param data_r      values of csr
+   * \param indptr_r    row offsets of csr
+   * \param col_idx_r   column indices of csr
+   * \param seg_len     workload of this thread
+   * \param num_rows_l  number of rows in lhs
+   * \param num_cols_l  number of columns in lhs
+   * \param num_rows_r  number of rows in rhs
+   * \param num_cols_r  number of columns in rhs
+   */
+  template<typename DType, typename IType, typename CType>
+  MSHADOW_CINLINE static void Map(int i,
+                                  DType* out,
+                                  const DType* data_l,
+                                  const DType* data_r,
+                                  const IType* indptr_r,
+                                  const CType* col_idx_r,
+                                  const nnvm::dim_t seg_len,
+                                  const nnvm::dim_t num_rows_l,
+                                  const nnvm::dim_t num_cols_l,
+                                  const nnvm::dim_t num_rows_r,
+                                  const nnvm::dim_t num_cols_r) {
+    using nnvm::dim_t;
+    const dim_t seg_start = i * seg_len;
+    if (seg_start >= num_rows_l) return;
+    const dim_t seg_end = std::min(seg_start + seg_len, num_rows_l);
+    for (dim_t j = 0; j < num_rows_r; ++j) {
+      if (indptr_r[j] == indptr_r[j+1]) continue;
+      for (IType k = indptr_r[j]; k < indptr_r[j+1]; ++k) {
+        const CType col_idx = col_idx_r[k];
+        const DType val = data_r[k];
+        for (dim_t r = seg_start; r < seg_end; ++r) {
+          out[r*num_cols_r+col_idx] += data_l[r*num_cols_l+j] * val;
+        }
+      }
+    }
+  }
+};
+
+/*!
+ * \brief CPU Kernel of dot(dns1, csr.T) = dns2
+ * Parallelization by row blocks
+ */
+struct DotDnsCsrTransDnsByRowBlocks {
+  /*!
+   * \brief
+   * \param i           the i-th thread
+   * \param out         output matrix
+   * \param data_l      data of lhs
+   * \param data_r      values of csr
+   * \param indptr_r    row offsets of csr
+   * \param col_idx_r   column indices of csr
+   * \param seg_len     workload of this thread
+   * \param num_rows_l  number of rows in lhs
+   * \param num_cols_l  number of columns in lhs
+   * \param num_rows_r  number of rows in rhs
+   * \param num_cols_r  number of columns in rhs
+   */
+  template<typename DType, typename IType, typename CType>
+  MSHADOW_CINLINE static void Map(int i,
+                                  DType* out,
+                                  const DType* data_l,
+                                  const DType* data_r,
+                                  const IType* indptr_r,
+                                  const CType* col_idx_r,
+                                  const nnvm::dim_t seg_len,
+                                  const nnvm::dim_t num_rows_l,
+                                  const nnvm::dim_t num_cols_l,
+                                  const nnvm::dim_t num_rows_r,
+                                  const nnvm::dim_t num_cols_r) {
+    using nnvm::dim_t;
+    const dim_t seg_start = i * seg_len;
+    if (seg_start >= num_rows_l) return;
+    const dim_t seg_end = std::min(seg_start + seg_len, num_rows_l);
+    for (dim_t j = 0; j < num_rows_r; ++j) {
+      if (indptr_r[j] == indptr_r[j+1]) continue;
+      for (IType k = indptr_r[j]; k < indptr_r[j+1]; ++k) {
+        const CType col_idx = col_idx_r[k];
+        const DType val = data_r[k];
+        for (dim_t r = seg_start; r < seg_end; ++r) {
+          out[r*num_rows_r+j] += data_l[r*num_cols_l+col_idx] * val;
+        }
+      }
+    }
+  }
+};
+
+/*!
  * \brief CPU Impl of dot(csr, dns1) = dns2 and dot(csr.T, dns1) = dns2
  */
 inline void DotCsrDnsDnsImpl(const OpContext& ctx,
@@ -563,6 +792,14 @@ inline void DotCsrDnsDnsImpl(const OpContext& ctx,
               s, num_threads, data_out.dptr<DType>());
         }
         num_threads = mxnet_op::get_num_threads<cpu>(data_out.shape_[0]);
+        bool dynamic = false;
+        const dim_t large_matrix_threshold = 1024 * 10;
+        if (data_out.shape_[0] > large_matrix_threshold) {
+          dynamic = true;
+          // each unit of work processes at least 1024 elements in the output
+          const dim_t unit_work_per_thread = 1024;
+          num_threads = data_out.Size() / unit_work_per_thread;
+        }
         dim_t seg_len = (data_out.shape_[0] + num_threads - 1) / num_threads;
         if (trans_lhs) {
           mxnet_op::Kernel<DotCsrTransDnsDnsByRowBlocks, cpu>::Launch(s, num_threads,
@@ -570,10 +807,17 @@ inline void DotCsrDnsDnsImpl(const OpContext& ctx,
               col_idx_l.dptr<CType>(), data_r.dptr<DType>(), seg_len,
               lhs.shape()[0], data_out.shape_[0], data_out.shape_[1]);
         } else {
-          mxnet_op::Kernel<DotCsrDnsDnsByRowBlocks, cpu>::Launch(s, num_threads,
-              data_out.dptr<DType>(), data_l.dptr<DType>(), indptr_l.dptr<IType>(),
-              col_idx_l.dptr<CType>(), data_r.dptr<DType>(), seg_len,
-              data_out.shape_[0], data_out.shape_[1]);
+          if (dynamic) {
+            mxnet_op::Kernel<DotCsrDnsDnsByRowBlocks, cpu>::LaunchDynamic(s, num_threads,
+                data_out.dptr<DType>(), data_l.dptr<DType>(), indptr_l.dptr<IType>(),
+                col_idx_l.dptr<CType>(), data_r.dptr<DType>(), seg_len,
+                data_out.shape_[0], data_out.shape_[1]);
+          } else {
+            mxnet_op::Kernel<DotCsrDnsDnsByRowBlocks, cpu>::Launch(s, num_threads,
+                data_out.dptr<DType>(), data_l.dptr<DType>(), indptr_l.dptr<IType>(),
+                col_idx_l.dptr<CType>(), data_r.dptr<DType>(), seg_len,
+                data_out.shape_[0], data_out.shape_[1]);
+          }
         }
       });
     });
@@ -600,7 +844,7 @@ inline void DotCsrDnsRspImpl(const OpContext& ctx,
   }
   CHECK_EQ(req, kWriteTo);
 
-  using mxnet_op::set_zero;
+  using namespace mxnet_op;
   using nnvm::dim_t;
 
   const TBlob data_l = lhs.data();
@@ -613,15 +857,15 @@ inline void DotCsrDnsRspImpl(const OpContext& ctx,
       MSHADOW_IDX_TYPE_SWITCH(col_idx_l.type_flag_, CType, {  // col idx type
         MSHADOW_IDX_TYPE_SWITCH(ret->aux_type(rowsparse::kIdx), RType, {  // row idx type
           const dim_t num_rows = lhs.shape()[1];
-          size_t workspace_size = 2 * (num_rows * sizeof(dim_t));
+          size_t workspace_size = num_rows * sizeof(dim_t);
           mshadow::Tensor<cpu, 1, char> workspace =
             ctx.requested[0].get_space_typed<cpu, 1, char>(
             mshadow::Shape1(workspace_size), s);
           dim_t* row_flg = reinterpret_cast<dim_t*>(workspace.dptr_);
-          dim_t* prefix_sum = row_flg + num_rows;
-
-          Fill<false>(s, TBlob(row_flg, mshadow::Shape1(num_rows), cpu::kDevMask), kWriteTo, 0);
-          mxnet_op::Kernel<MarkRowFlgKernel, cpu>::Launch(s, lhs.aux_shape(csr::kIdx)[0], row_flg,
+          // prefix sum array re-uses the row_flg array temp space
+          dim_t* prefix_sum = row_flg;
+          Kernel<set_zero, cpu>::Launch(s, num_rows, row_flg);
+          Kernel<MarkRowFlgKernel, cpu>::Launch(s, lhs.aux_shape(csr::kIdx)[0], row_flg,
             col_idx_l.dptr<CType>());
 
           prefix_sum[0] = row_flg[0];
@@ -811,34 +1055,182 @@ inline void DotCsrRspRspImpl(const OpContext& ctx,
   });
 }
 
+/*
+ * \brief Impl of dot(dns, csr) = csr
+ */
+inline void DotDnsCsrCsrImpl(const OpContext& ctx, const cpu& cpu_dev,
+                             const TBlob& lhs, const NDArray& rhs,
+                             const OpReqType req, NDArray* ret) {
+  if (kNullOp == req) return;
+
+  CHECK_EQ(req, kWriteTo);
+  CHECK_EQ(rhs.storage_type(), kCSRStorage);
+
+  using namespace mshadow;
+  using namespace mshadow::expr;
+  using nnvm::dim_t;
+
+  /* Initialize data structures */
+  mshadow::Stream<cpu>* s = ctx.get_stream<cpu>();
+  const NDArray& out = *ret;
+  const TBlob data_l = lhs;
+  const TBlob data_r = rhs.data();
+  const TBlob indptr_r = rhs.aux_data(csr::kIndPtr);
+  const TBlob col_idx_r = rhs.aux_data(csr::kIdx);
+  if (!rhs.storage_initialized()) {
+    FillZerosCsrImpl(s, *ret);
+    return;
+  }
+
+  MSHADOW_SGL_DBL_TYPE_SWITCH(data_r.type_flag_, DType, {     // data type
+    MSHADOW_IDX_TYPE_SWITCH(indptr_r.type_flag_, IType, {     // indptr type
+      MSHADOW_IDX_TYPE_SWITCH(col_idx_r.type_flag_, CType, {  // colidx type
+        /* Allocate workspace */
+        CType num_cols_out = out.shape()[1];
+        CType rhs_data_size = static_cast<CType>(col_idx_r.shape_.Size());
+        size_t workspace_size = 2 * num_cols_out * sizeof(CType);
+        Tensor<cpu, 1, char> workspace =
+            ctx.requested[0].get_space_typed<cpu, 1, char>(
+                Shape1(workspace_size), s);
+        CType* col_flg = reinterpret_cast<dim_t*>(workspace.dptr_);
+
+        CType* prefix_sum = col_flg;
+        CType* nnc_idx = prefix_sum + num_cols_out;
+
+        /* Set the column flags for nnz columns */
+        mxnet_op::Kernel<mxnet_op::set_zero, cpu>::Launch(s, num_cols_out,
+                                                          col_flg);
+        mxnet_op::Kernel<MarkRowFlgKernel, cpu>::Launch(
+            s, rhs_data_size, col_flg, col_idx_r.dptr<CType>());
+
+        /* 1. Calculate prefix sum from col flgs
+         * 2. Storage all non zero column indexes in nnc_idx
+         */
+        CType cur = 0;
+        prefix_sum[0] = col_flg[0];
+        if (prefix_sum[0]) nnc_idx[cur++] = 0;
+        for (CType i = 1; i < num_cols_out; i++) {
+          prefix_sum[i] = prefix_sum[i - 1] + col_flg[i];
+          if (prefix_sum[i] > prefix_sum[i - 1]) nnc_idx[cur++] = i;
+        }
+
+        /* Allocate aux data for out */
+        IType num_rows_l = lhs.shape_[0];
+        dim_t nnc = prefix_sum[num_cols_out - 1];
+        dim_t nnz = nnc * num_rows_l;
+        out.CheckAndAllocAuxData(csr::kIndPtr, Shape1(num_rows_l + 1));
+        out.CheckAndAllocAuxData(csr::kIdx, Shape1(nnz));
+        out.CheckAndAllocData(Shape1(nnz));
+
+        /* Set csr indptr and index according to nnc_idx*/
+        IType* indptr_out = out.aux_data(csr::kIndPtr).dptr<IType>();
+        CType* col_idx_out = out.aux_data(csr::kIdx).dptr<CType>();
+        DType* data_out = out.data().dptr<DType>();
+        mxnet_op::Kernel<PopulateCsrForNNC, cpu>::Launch(
+            s, num_rows_l, nnc_idx, indptr_out, col_idx_out, nnc, num_rows_l);
+        mxnet_op::Kernel<mxnet_op::set_zero, cpu>::Launch(s, nnz, data_out);
+
+        const dim_t num_threads = mxnet_op::get_num_threads<cpu>(num_rows_l);
+        const dim_t seg_len = (num_rows_l + num_threads - 1) / num_threads;
+
+        IType num_rows_r = rhs.shape()[0];
+        mxnet_op::Kernel<DotDnsCsrCsrByRowBlocks, cpu>::Launch(
+            s, num_threads, data_out, data_l.dptr<DType>(),
+            indptr_r.dptr<IType>(), col_idx_r.dptr<CType>(),
+            data_r.dptr<DType>(), seg_len, num_rows_r, num_rows_l, num_cols_out,
+            nnc, prefix_sum);
+      });
+    });
+  });
+}
+
+/*
+ * \brief Impl of dot(dns, csr) = dns and dot(dns, csr.T) = dns
+ */
+inline void DotDnsCsrDnsImpl(const OpContext& ctx, const cpu& cpu_dev,
+  const TBlob& dns, const NDArray& rhs,
+  const OpReqType req, NDArray* ret,
+  const bool transpose_b) {
+  if (req == kNullOp) return;
+  CHECK_EQ(rhs.storage_type(), kCSRStorage);
+  mshadow::Stream<cpu>* s = ctx.get_stream<cpu>();
+  if (!rhs.storage_initialized()) {
+    Fill(s, ret->data(), req, 0);
+    return;
+  }
+
+  using nnvm::dim_t;
+
+  const TBlob data_r = rhs.data();
+  const TBlob indptr_r = rhs.aux_data(csr::kIndPtr);
+  const TBlob col_idx_r = rhs.aux_data(csr::kIdx);
+  const TBlob& data_l = dns;
+  const TBlob data_out = ret->data();
+
+  MSHADOW_REAL_TYPE_SWITCH(data_r.type_flag_, DType, {  // data type
+    MSHADOW_IDX_TYPE_SWITCH(indptr_r.type_flag_, IType, {  // indptr type
+      MSHADOW_IDX_TYPE_SWITCH(col_idx_r.type_flag_, CType, {  // col idx type
+        dim_t num_threads;
+        if (req == kWriteTo || req == kWriteInplace) {
+          num_threads = data_out.Size();
+          mxnet_op::Kernel<mxnet_op::set_zero, cpu>::Launch(
+              s, num_threads, data_out.dptr<DType>());
+        }
+        num_threads = mxnet_op::get_num_threads<cpu>(data_out.shape_[0]);
+        // seg by output row
+        dim_t seg_len = (data_out.shape_[0] + num_threads - 1) / num_threads;
+        if (transpose_b) {
+          mxnet_op::Kernel<DotDnsCsrTransDnsByRowBlocks, cpu>::Launch(s, num_threads,
+              data_out.dptr<DType>(), data_l.dptr<DType>(),
+              data_r.dptr<DType>(), indptr_r.dptr<IType>(),
+              col_idx_r.dptr<CType>(), seg_len,
+              dns.shape_[0], dns.shape_[1],
+              rhs.shape()[0], rhs.shape()[1]);
+        } else {
+          mxnet_op::Kernel<DotDnsCsrDnsByRowBlocks, cpu>::Launch(s, num_threads,
+              data_out.dptr<DType>(), data_l.dptr<DType>(),
+              data_r.dptr<DType>(), indptr_r.dptr<IType>(),
+              col_idx_r.dptr<CType>(), seg_len,
+              dns.shape_[0], dns.shape_[1],
+              rhs.shape()[0], rhs.shape()[1]);
+        }
+      });
+    });
+  });
+}
+
 inline bool DotShape(const nnvm::NodeAttrs& attrs,
-                     std::vector<TShape> *in_attrs,
-                     std::vector<TShape> *out_attrs) {
+                     mxnet::ShapeVector *in_attrs,
+                     mxnet::ShapeVector *out_attrs) {
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
   CHECK_EQ(in_attrs->size(), 2U);
   CHECK_EQ(out_attrs->size(), 1U);
-  TShape& lshape = (*in_attrs)[0];
-  TShape& rshape = (*in_attrs)[1];
+  mxnet::TShape& lshape = (*in_attrs)[0];
+  mxnet::TShape& rshape = (*in_attrs)[1];
   if (lshape.ndim() == 1 && rshape.ndim() == 1) {
     CHECK(!param.transpose_a && !param.transpose_b) << "Cannot transpose vectors";
     CHECK_EQ(lshape[0], rshape[0]) << "dot shape error: " << lshape << " X " << rshape;
     SHAPE_ASSIGN_CHECK(*out_attrs, 0, mshadow::Shape1(1));
   } else {
     bool Ta = param.transpose_a, Tb = param.transpose_b;
-    TShape L[2], R[2];
+    mxnet::TShape L[2], R[2];
     if (Ta) {
       L[0] = mshadow::Shape1(lshape[0]);
-      L[1] = lshape.ndim() > 1 ? TShape(&lshape[1], &lshape[lshape.ndim()]) : TShape(1);
+      L[1] = lshape.ndim() > 1 ?
+             mxnet::TShape(&lshape[1], lshape.end()) : mxnet::TShape(1, 1);
     } else {
-      L[0] = lshape.ndim() > 1 ? TShape(&lshape[0], &lshape[lshape.ndim()-1]) : TShape(1);
+      L[0] = lshape.ndim() > 1 ?
+             mxnet::TShape(&lshape[0], &lshape[lshape.ndim()-1]) : mxnet::TShape(1, 1);
       L[1] = mshadow::Shape1(lshape[lshape.ndim()-1]);
     }
     if (Tb) {
-      R[0] = rshape.ndim() > 1 ? TShape(&rshape[0], &rshape[rshape.ndim()-1]) : TShape(1);
+      R[0] = rshape.ndim() > 1 ?
+             mxnet::TShape(&rshape[0], &rshape[rshape.ndim()-1]) : mxnet::TShape(1, 1);
       R[1] = mshadow::Shape1(rshape[rshape.ndim()-1]);
     } else {
       R[0] = mshadow::Shape1(rshape[0]);
-      R[1] = rshape.ndim() > 1 ? TShape(&rshape[1], &rshape[rshape.ndim()]) : TShape(1);
+      R[1] = rshape.ndim() > 1 ?
+             mxnet::TShape(&rshape[1], rshape.end()) : mxnet::TShape(1, 1);
     }
 
     if (L[!Ta].Size() != 0 && R[Tb].Size() != 0) {
@@ -846,9 +1238,9 @@ inline bool DotShape(const nnvm::NodeAttrs& attrs,
         << "dot shape error: " << lshape << " X " << rshape;
     }
     std::vector<index_t> buf;
-    if (lshape.ndim() > 1) buf.insert(buf.end(), &L[Ta][0], &L[Ta][L[Ta].ndim()]);
-    if (rshape.ndim() > 1) buf.insert(buf.end(), &R[!Tb][0], &R[!Tb][R[!Tb].ndim()]);
-    TShape oshape(buf.begin(), buf.end());
+    if (lshape.ndim() > 1) buf.insert(buf.end(), &L[Ta][0], L[Ta].end());
+    if (rshape.ndim() > 1) buf.insert(buf.end(), &R[!Tb][0], R[!Tb].end());
+    mxnet::TShape oshape(buf.begin(), buf.end());
     SHAPE_ASSIGN_CHECK(*out_attrs, 0, oshape);
   }
   return true;
@@ -864,7 +1256,6 @@ void DotForwardEx(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(outputs.size(), 1U);
   CHECK_EQ(req.size(), 1U);
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
-  CHECK(!param.transpose_b) << "transposing rhs of the sparse dot op is not supported";
   CHECK_EQ(inputs[0].shape().ndim(), 2) << "sparse dot only supports 2 dimensional lhs";
   CHECK_EQ(inputs[1].shape().ndim(), 2) << "sparse dot only supports 2 dimensional rhs";
   auto lhs_stype = inputs[0].storage_type();
@@ -886,8 +1277,17 @@ void DotForwardEx(const nnvm::NodeAttrs& attrs,
       && out_stype == kRowSparseStorage && !param.transpose_b) {
     NDArray ret = outputs[0];
     DotCsrRspRspImpl(ctx, xpu(), inputs[0], inputs[1], req[0], param.transpose_a, &ret);
+  } else if (lhs_stype == kDefaultStorage && rhs_stype == kCSRStorage &&
+             out_stype == kCSRStorage &&
+             !(param.transpose_a || param.transpose_b)) {
+    NDArray ret = outputs[0];
+    DotDnsCsrCsrImpl(ctx, xpu(), inputs[0].data(), inputs[1], req[0], &ret);
+  } else if (lhs_stype == kDefaultStorage && rhs_stype == kCSRStorage &&
+             out_stype == kDefaultStorage && !(param.transpose_a)) {
+    NDArray ret = outputs[0];
+    DotDnsCsrDnsImpl(ctx, xpu(), inputs[0].data(), inputs[1], req[0], &ret, param.transpose_b);
   } else {
-    LOG(FATAL) << "Not implemented: " << operator_string(attrs, ctx, inputs, req, outputs);
+    LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
   }
 }
 
@@ -900,16 +1300,18 @@ void DotBackwardEx(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(inputs.size(), 3U);
   CHECK_EQ(outputs.size(), 2U);
   CHECK_EQ(req.size(), 2U);
-  CHECK_EQ(kNullOp, req[0])
-    << "sparse dot does not support computing the gradient of the csr/lhs";
+  CHECK(!(req[0] != kNullOp && outputs[0].storage_type() == kCSRStorage))
+    << "sparse dot does not support computing the gradient of csr";
+  CHECK(!(req[1] != kNullOp && outputs[1].storage_type() == kCSRStorage))
+    << "sparse dot does not support computing the gradient of csr";
   CHECK_NE(req[1], kWriteInplace) << "DotBackwardEx does not support WriteInplace";
 
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
-  CHECK(!param.transpose_b) << "sparse dot only supports dot(A, X) and dot(A.T(), X)";
   CHECK_EQ(inputs[0].shape().ndim(), 2) << "sparse dot only supports 2 dimensional lhs";
   CHECK_EQ(inputs[1].shape().ndim(), 2) << "sparse dot only supports 2 dimensional rhs";
   const auto ograd_stype = inputs[0].storage_type();
   const auto lhs_stype = inputs[1].storage_type();
+  const auto rhs_stype = inputs[2].storage_type();
   const auto grad_rhs_stype = outputs[1].storage_type();
   if (ograd_stype == kDefaultStorage  // ograd dns format
       && lhs_stype == kCSRStorage  // csr input lhs of the op
@@ -928,8 +1330,13 @@ void DotBackwardEx(const nnvm::NodeAttrs& attrs,
       && grad_rhs_stype == kDefaultStorage && !param.transpose_b) {
     TBlob ret = outputs[1].data();
     DotCsrRspDnsImpl(ctx, xpu(), inputs[1], inputs[0], req[1], !param.transpose_a, &ret);
+  } else if (ograd_stype == kDefaultStorage &&  // ograd dns format
+             lhs_stype == kDefaultStorage &&  // lhs dns format
+             rhs_stype == kCSRStorage && !param.transpose_a) {
+    NDArray ret = outputs[0];
+    DotDnsCsrDnsImpl(ctx, xpu(), inputs[0].data(), inputs[2], req[0], &ret, !param.transpose_b);
   } else {
-    LOG(FATAL) << "Not implemented: " << operator_string(attrs, ctx, inputs, req, outputs);
+    LogUnimplementedOp(attrs, ctx, inputs, req, outputs);
   }
 }
 
@@ -947,9 +1354,10 @@ void BatchDotForward_(const nnvm::NodeAttrs& attrs,
       << "Binary function only support input/output with the same type";
   CHECK_EQ(outputs[0].type_flag_, inputs[1].type_flag_)
       << "Binary function only support input/output with the same type";
-  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64)
-      << "dot only supports float32 and float64";
-  MSHADOW_SGL_DBL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64 ||
+    (outputs[0].type_flag_ == kFloat16 && ctx.run_ctx.ctx.dev_mask() == mshadow::gpu::kDevMask))
+    << "dot only supports float32/float64 for CPU, and float16/float32/float64 for GPU";
+  MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
     mshadow::Tensor<xpu, 3, DType> out = outputs[0].get<xpu, 3, DType>(s);
     mshadow::Tensor<xpu, 3, DType> mlhs = inputs[0].get<xpu, 3, DType>(s);
     mshadow::Tensor<xpu, 3, DType> mrhs = inputs[1].get<xpu, 3, DType>(s);
@@ -989,9 +1397,10 @@ void BatchDotBackward_(const nnvm::NodeAttrs& attrs,
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
   CHECK_NE(req[1], kWriteInplace);
   CHECK_NE(req[0], kWriteInplace);
-  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64)
-      << "dot only supports float32 and float64";
-  MSHADOW_SGL_DBL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
+  CHECK(outputs[0].type_flag_ == kFloat32 || outputs[0].type_flag_ == kFloat64 ||
+    (outputs[0].type_flag_ == kFloat16 && ctx.run_ctx.ctx.dev_mask() == mshadow::gpu::kDevMask))
+    << "dot only supports float32/float64 for CPU, and float16/float32/float64 for GPU";
+  MSHADOW_REAL_TYPE_SWITCH(outputs[0].type_flag_, DType, {
     mshadow::Tensor<xpu, 3, DType> mout_grad = inputs[0].get<xpu, 3, DType>(s);
     mshadow::Tensor<xpu, 3, DType> mlhs_data = inputs[1].get<xpu, 3, DType>(s);
     mshadow::Tensor<xpu, 3, DType> mrhs_data = inputs[2].get<xpu, 3, DType>(s);
@@ -1063,13 +1472,13 @@ void BatchDotBackward_(const nnvm::NodeAttrs& attrs,
 }
 
 inline bool BatchDotShape(const nnvm::NodeAttrs& attrs,
-                          std::vector<TShape> *in_attrs,
-                          std::vector<TShape> *out_attrs) {
+                          mxnet::ShapeVector *in_attrs,
+                          mxnet::ShapeVector *out_attrs) {
   CHECK_EQ(in_attrs->size(), 2U);
   CHECK_EQ(out_attrs->size(), 1U);
   const DotParam& param = nnvm::get<DotParam>(attrs.parsed);
-  TShape& lshape = (*in_attrs)[0];
-  TShape& rshape = (*in_attrs)[1];
+  mxnet::TShape& lshape = (*in_attrs)[0];
+  mxnet::TShape& rshape = (*in_attrs)[1];
   if (lshape.ndim() == 3 && rshape.ndim() == 3) {
     CHECK(lshape[0] == rshape[0])
       << "batch_dot shape error(batch_size must be equal): " << lshape << " X " << rshape

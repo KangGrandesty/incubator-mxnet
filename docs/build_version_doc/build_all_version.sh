@@ -19,64 +19,167 @@
 
 # This script is for locally building website for all versions
 # Built files are stored in $built
-# Version numbers are stored in $tag_list.
-# Version numbers are ordered from latest to old and final one is master.
-tag_list="0.12.1 0.12.0 0.11.0 master"
+# Default repo is mxnet_url="https://github.com/apache/incubator-mxnet.git"
+# Default build directory is mxnet_folder="apache-mxnet"
+# Takes two required arguments and one optional:
+# tag list (required)- semicolon delimited list of Github tags
+#   Example: "1.2.0;1.1.0;master"
+# display list (required) - semicolon delimited list of what to display on website
+#   Example: "1.2.1;1.1.0;master"
+# NOTE: The number of tags for the two arguments must be the same.
+# Repo URL (optional) - a GitHub URL that is a fork of the MXNet project
+#   When this is used the build directory will be {github_username}-mxnet
 
-mxnet_url="https://github.com/apache/incubator-mxnet.git"
-mxnet_folder="apache_mxnet"
+# Example Usage:
+#  Build the content of the 1.2.0 branch in the main repo to the 1.2.1 folder.
+#   ./build_all_version.sh "1.2.0" "1.2.1"
+#  Using the main project repo, map the 1.2.0 branch to output to a 1.2.1 directory; others as is:
+#   ./build_all_version.sh "1.2.0;1.1.0;master" "1.2.1;1.1.0;master"
+#  Using a custom branch and fork of the repo, map the branch to master,
+#    map 1.2.0 branch to 1.2.1 and leave 1.1.0 in 1.1.0:
+#   ./build_all_version.sh "sphinx_error_reduction;1.2.0;1.1.0" \
+#   "master;1.2.1;1.1.0" https://github.com/aaronmarkham/incubator-mxnet.git
+
+set -e
+set -x
+
+# Set OPTS to any Sphinx build options, like -W for "warnings as errors"
+OPTS=
+
+# $1 is the list of branches/tags to build
+if [ -z "$1" ]
+  then
+    echo "Please provide a list of branches or tags you wish to build."
+    exit 1
+  else
+    IFS=$';'
+    tag_list=$1
+    echo "Using these tags: $tag_list"
+    build_arr=($tag_list)
+fi
+
+# $2 is the list of output folders which will be displayed on the site
+if [ -z "$2" ]
+  then
+    echo "Please provide a list of version tags you wish to display on the site."
+    exit 1
+  else
+    IFS=$';'
+    tags_to_display=$2
+    echo "Displaying these tags: $tags_to_display"
+    display_arr=($tags_to_display)
+    for key in ${!build_arr[@]}; do
+        echo "Branch/tag ${build_arr[${key}]} will be displayed as ${display_arr[${key}]}"
+    done
+fi
+
+# $3 is the GitHub project URL or fork
+if [ -z "$3" ]
+  then
+    echo "Using the main project URL."
+    mxnet_url="https://github.com/apache/incubator-mxnet.git"
+    mxnet_folder="apache-mxnet"
+  else
+    mxnet_url=$3
+    fork=${mxnet_url##"https://github.com/"}
+    fork_user=${fork%%"/incubator-mxnet.git"}
+    mxnet_folder=$fork_user"-mxnet"
+    echo "Building with a user supplied fork: $mxnet_url"
+fi
+
+# This is the output folder
 built="VersionedWeb"
-mkdir $built
-mkdir "$built/versions"
 
-git clone $mxnet_url $mxnet_folder --recursive
-cd "$mxnet_folder/docs"
-tag_file="tag_list.txt"
 
-# Write all version numbers into $tag_file
-for tag in $tag_list; do
-    if [ $tag != 'master' ]
-    then
-        echo "$tag" >> "$tag_file"
+function create_repo () {
+  repo_folder=$1
+  mxnet_url=$2
+  git clone $mxnet_url $repo_folder --recursive
+  echo "Adding MXNet upstream repo..."
+  cd $repo_folder
+  git remote add upstream https://github.com/apache/incubator-mxnet
+  cd ..
+}
+
+
+function refresh_branches () {
+  repo_folder=$1
+  cd $repo_folder
+  git fetch
+  git fetch upstream
+  cd ..
+}
+
+
+function checkout () {
+  repo_folder=$1
+  cd $repo_folder
+  # Overriding configs later will cause a conflict here, so stashing...
+  git stash
+  # Fails to checkout if not available locally, so try upstream
+  git checkout "$repo_folder" || git branch $repo_folder "upstream/$repo_folder" && git checkout "$repo_folder" || exit 1
+  if [ $tag == 'master' ]; then
+    git pull
+    # master gets warnings as errors for Sphinx builds
+    OPTS="-W"
+  else
+    OPTS=
+  fi
+  git submodule update --init --recursive
+  cd ..
+}
+
+
+if [ ! -d "$mxnet_folder" ]; then
+  mkdir $mxnet_folder
+fi
+
+if [ ! -d "$built" ]; then
+  mkdir $built
+  mkdir "$built/versions"
+  else
+    if [ ! -d "$built/versions" ]; then
+      mkdir "$built/versions"
     fi
+fi
+
+# Checkout each tag and build it
+# Then store it in a folder according to the desired display tag
+for key in ${!build_arr[@]}; do
+    tag=${build_arr[${key}]}
+    cd "$mxnet_folder"
+
+    # Each tag will get its own subfolder
+    if [ ! -d "$tag" ]; then
+      create_repo "$tag" "$mxnet_url"
+    fi
+
+    refresh_branches $tag
+
+    checkout $tag
+
+    # Bring over the current configurations, so we can anticipate results.
+    cp ../../mxdoc.py $tag/docs/
+    cp ../../settings.ini $tag/docs/
+    cp ../../conf.py $tag/docs/
+    cp ../../Doxyfile $tag/docs/
+    cp -a ../../_static $tag/docs/
+
+    echo "Building $tag..."
+    cd $tag/docs
+    make html USE_OPENMP=1 BUILD_VER=$tag SPHINXOPTS=$OPTS || exit 1
+    # Navigate back to build_version_doc folder
+    cd ../../../
+    # Use the display tag name for the folder name
+    file_loc="$built/versions/${display_arr[${key}]}"
+    if [ -d "$file_loc" ] ; then
+        rm -rf "$file_loc"
+    fi
+    mkdir "$file_loc"
+    echo "Storing artifacts for $tag in $file_loc folder..."
+    cp -a "$mxnet_folder/$tag/docs/_build/html/." "$file_loc"
 done
 
-# Build all versions and use latest version(First version number in $tag_list) as landing page.
-version_num=0
-for tag in $tag_list; do
-    if [ $tag == 'master' ]
-    then
-        git checkout master
-    else
-        git checkout "tags/$tag"
-    fi
-
-    git submodule update || exit 1
-    cd ..
-    make clean
-    cd docs
-    make clean
-    make html USE_OPENMP=0 || exit 1
-    python build_version_doc/AddVersion.py --file_path "_build/html/" --current_version "$tag" || exit 1
-
-    if [ $tag != 'master' ]
-    then 
-        python build_version_doc/AddPackageLink.py --file_path "_build/html/get_started/install.html" \
-                                                   --current_version "$tag" || exit 1
-    fi
-
-    if [ $version_num == 0 ]
-    then
-        cp -a _build/html/. "../../$built"
-    else
-        file_loc="../../$built/versions/$tag"
-        mkdir "$file_loc"
-        cp -a _build/html/. "$file_loc"
-    fi
-
-    ((++version_num))
-done
-    
-mv "$tag_file" "../../$built/tag.txt"
-cd ../..
-rm -rf "$mxnet_folder"
+echo "Now you may want to run update_all_version.sh to create the production layout with the versions dropdown and other per-version corrections."
+echo "The following pattern is recommended (tags, default tag, url base):"
+echo "./update_all_version.sh \"$2\" master http://mxnet.incubator.apache.org/"

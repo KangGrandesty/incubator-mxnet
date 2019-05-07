@@ -44,10 +44,11 @@ DMLC_REGISTER_PARAMETER(MultiSampleParam);
     [](const NodeAttrs& attrs) { \
       std::vector<std::string> v = {input_name_1, input_name_2}; v.resize(num_inputs); return v; \
     }) \
-  .set_attr<nnvm::FInferShape>("FInferShape", MultiSampleOpShape) \
+  .set_attr<mxnet::FInferShape>("FInferShape", MultiSampleOpShape) \
   .set_attr<nnvm::FInferType>("FInferType", MultiSampleOpType) \
   .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& attrs) { \
-      return std::vector<ResourceRequest>{ResourceRequest::kRandom, ResourceRequest::kTempSpace}; \
+      return std::vector<ResourceRequest>{ResourceRequest::kParallelRandom, \
+                                          ResourceRequest::kTempSpace}; \
     }) \
   .set_attr<FCompute>("FCompute<cpu>", MultiSampleOpForward<cpu, sampler, num_inputs>) \
   .set_attr<nnvm::FGradient>("FGradient", MakeZeroGradNodes) \

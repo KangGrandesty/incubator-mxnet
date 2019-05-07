@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Gradient Compression
 
 Gradient Compression reduces communication bandwidth, and in some scenarios, it can make training more scalable and efficient without significant loss in convergence rate or accuracy. Example implementations with GPUs, CPUs, and distributed training are provided in this document. 
@@ -85,7 +102,7 @@ A reference `gluon` implementation with a gradient compression option can be fou
 mod = mx.mod.Module(..., compression_params={'type’:'2bit', 'threshold':0.5})
 ```
 
-A `module` example is provided with [this guide for setting up MXNet with distributed training](https://mxnet.incubator.apache.org/versions/master/how_to/multi_devices.html#distributed-training-with-multiple-machines). It comes with the option of turning on gradient compression as an argument to the [train_mnist.py script](https://github.com/apache/incubator-mxnet/blob/master/example/image-classification/train_mnist.py).
+A `module` example is provided with [this guide for setting up MXNet with distributed training](https://mxnet.incubator.apache.org/versions/master/faq/multi_devices.html#distributed-training-with-multiple-machines). It comes with the option of turning on gradient compression as an argument to the [train_mnist.py script](https://github.com/apache/incubator-mxnet/blob/master/example/image-classification/train_mnist.py).
 
 ### Configuration Details
 

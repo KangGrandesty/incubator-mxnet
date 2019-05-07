@@ -1,22 +1,3 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
  ******************* BEGIN Caffe Copyright Notice and Disclaimer ****************
  *
@@ -106,8 +87,8 @@ namespace op {
 template <typename DType>
 inline void deformable_im2col(mshadow::Stream<cpu>* s,
   const DType* data_im, const DType* data_offset,
-  const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride, const TShape& dilation,
+  const mxnet::TShape& im_shape, const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride, const mxnet::TShape& dilation,
   const uint32_t deformable_group, DType* data_col) {
   if (2 == kernel_shape.ndim()) {
     LOG(FATAL) << "only implemented in GPU";
@@ -134,9 +115,9 @@ inline void deformable_im2col(mshadow::Stream<cpu>* s,
 template <typename DType>
 inline void deformable_col2im(mshadow::Stream<cpu>* s,
   const DType* data_col, const DType* data_offset,
-  const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride,
-  const TShape& dilation, const uint32_t deformable_group,
+  const mxnet::TShape& im_shape, const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride,
+  const mxnet::TShape& dilation, const uint32_t deformable_group,
   DType* grad_im, OpReqType req) {
   LOG(FATAL) << "only implemented in GPU";
 }
@@ -160,10 +141,12 @@ inline void deformable_col2im(mshadow::Stream<cpu>* s,
 
 template <typename DType>
 inline void deformable_col2im_coord(mshadow::Stream<cpu>* s,
-  const DType* data_col, const DType* data_im, const DType* data_offset, const TShape& im_shape,
-  const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride,
-  const TShape& dilation, const uint32_t deformable_group, DType* grad_offset, OpReqType req) {
+  const DType* data_col, const DType* data_im,
+  const DType* data_offset, const mxnet::TShape& im_shape,
+  const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride,
+  const mxnet::TShape& dilation, const uint32_t deformable_group,
+  DType* grad_offset, OpReqType req) {
   LOG(FATAL) << "only implemented in GPU";
 }
 

@@ -103,9 +103,10 @@ struct InferStorageTypeError : public dmlc::Error {
     : dmlc::Error(msg_), msg(msg_), index(index) {}
 };
 
-/*! \brief check if shape is empty or contains unknown (0) dim. */
-inline bool shape_is_none(const TShape& x) {
-  return x.ndim() == 0 || x.Size() == 0;
+/*! \brief check if shape is empty or contains unknown (0) dim.
+ * DEPRECATED. */
+inline bool shape_is_none(const mxnet::TShape& x) {
+  return !mxnet::shape_is_known(x);
 }
 
 /*! \brief check if type is none (-1) */
@@ -119,12 +120,12 @@ inline bool storage_type_is_none(const int& x) {
 }
 
 /*! \brief check if shape is scalar({1}). */
-inline bool shape_is_scalar(const TShape& x) {
-  return x.ndim() == 1 && x.Size() == 1;
+inline bool shape_is_scalar(const mxnet::TShape& x) {
+  return x.ndim() == 0;
 }
 
 /*! \brief get string representation of shape */
-inline std::string shape_string(const TShape& x) {
+inline std::string shape_string(const mxnet::TShape& x) {
   std::ostringstream os;
   os << x;
   return os.str();
@@ -158,17 +159,17 @@ inline std::string type_string(const int& x) {
  * \param x source shape.
  * \return whether x and y are compatible.
  */
-inline bool shape_assign(TShape *y, const TShape& x) {
-  if (y->ndim() == 0) {
+inline bool shape_assign(mxnet::TShape *y, const mxnet::TShape& x) {
+  if (!mxnet::ndim_is_known(*y)) {
     *y = x;
     return true;
   } else if (y->ndim() != x.ndim()) {
-    return x.ndim() == 0;
+    return !mxnet::ndim_is_known(x);
   } else {
-    for (size_t i = 0; i < y->ndim(); ++i) {
-      if ((*y)[i] == 0) {
+    for (int i = 0; i < y->ndim(); ++i) {
+      if (!mxnet::dim_size_is_known(*y, i)) {
         (*y)[i] = x[i];
-      } else if ((*y)[i] != x[i] && x[i] != 0) {
+      } else if ((*y)[i] != x[i] && x[i] >= 0) {
         return false;
       }
     }
@@ -221,9 +222,9 @@ inline bool dispatch_mode_assign(DispatchMode *y, const DispatchMode& x) {
  */
 #define SHAPE_ASSIGN_CHECK(shape_array, index, shape)                       \
   {                                                                         \
-    if (!shape_assign(&(shape_array)[index], TShape(shape))) {              \
+    if (!::mxnet::op::shape_assign(&(shape_array)[index], mxnet::TShape(shape))) { \
       std::ostringstream os;                                                \
-      os << "Shape inconsistent, Provided=" << (shape_array)[index] << ','  \
+      os << "Shape inconsistent, Provided = " << (shape_array)[index] << ','\
          << " inferred shape=" << shape;                                    \
       throw ::mxnet::op::InferShapeError(os.str(), index);                  \
     }                                                                       \
@@ -238,11 +239,11 @@ inline bool dispatch_mode_assign(DispatchMode *y, const DispatchMode& x) {
  */
 #define TYPE_ASSIGN_CHECK(type_array, index, type)                          \
   {                                                                         \
-    if (!type_assign(&(type_array)[index], type)) {                         \
+    if (!::mxnet::op::type_assign(&(type_array)[index], type)) {            \
       std::ostringstream os;                                                \
-      os << "Type inconsistent, Provided="                                  \
-         << type_string((type_array)[index]) << ','                         \
-         << " inferred type=" << type_string(type);                         \
+      os << "Type inconsistent, Provided = "                                \
+         << ::mxnet::op::type_string((type_array)[index]) << ','            \
+         << " inferred type = " << ::mxnet::op::type_string(type);          \
       throw ::mxnet::op::InferTypeError(os.str(), index);                   \
     }                                                                       \
   }
@@ -256,11 +257,11 @@ inline bool dispatch_mode_assign(DispatchMode *y, const DispatchMode& x) {
  */
 #define STORAGE_TYPE_ASSIGN_CHECK(type_array, index, type)                  \
   {                                                                         \
-    if (!type_assign(&(type_array)[index], type)) {                         \
+    if (!::mxnet::op::type_assign(&(type_array)[index], type)) {            \
       std::ostringstream os;                                                \
-      os << "Storage type inconsistent, Provided="                          \
+      os << "Storage type inconsistent, Provided = "                        \
          << common::stype_string((type_array)[index]) << ','                \
-         << " inferred storage type=" << common::stype_string(type);        \
+         << " inferred storage type = " << common::stype_string(type);      \
       throw ::mxnet::op::InferStorageTypeError(os.str(), index);            \
     }                                                                       \
   }
@@ -274,11 +275,11 @@ inline bool dispatch_mode_assign(DispatchMode *y, const DispatchMode& x) {
  */
 #define DISPATCH_MODE_ASSIGN_CHECK(type_array, index, type)                 \
   {                                                                         \
-    if (!dispatch_mode_assign(&(type_array)[index], type)) {                         \
+    if (!::mxnet::op::dispatch_mode_assign(&(type_array)[index], type)) {   \
       std::ostringstream os;                                                \
-      os << "Dispatch mode inconsistent, Provided="                         \
+      os << "Dispatch mode inconsistent, Provided = "                       \
          << common::dispatch_mode_string((type_array)[index]) << ','        \
-         << " inferred mode=" << common::dispatch_mode_string(type);        \
+         << " inferred mode = " << common::dispatch_mode_string(type);      \
       throw ::mxnet::op::InferStorageTypeError(os.str(), index);            \
     }                                                                       \
   }
@@ -291,8 +292,8 @@ inline bool dispatch_mode_assign(DispatchMode *y, const DispatchMode& x) {
 #define UNIFORM_TYPE_CHECK(type, expected, arg)                         \
   {                                                                     \
     CHECK_EQ(type, expected) << "This layer requires uniform type. "    \
-                             << "Expected '" << type_string(expected)   \
-                             << "' v.s. given '" << type_string(type)   \
+                             << "Expected '" << ::mxnet::op::type_string(expected)   \
+                             << "' v.s. given '" << ::mxnet::op::type_string(type)   \
                              << "' at '" << arg << "'";                 \
   }
 
@@ -337,8 +338,8 @@ inline bool storage_type_assign(StorageTypeVector* stypes,
                                 const DispatchMode target_dispatch) {
   CHECK_GT(stypes->size(), 0);
   bool success = true;
-  for (size_t i = 0; i < stypes->size(); i++) {
-    if (!type_assign(&(*stypes)[i], target_stype)) {
+  for (int& stype : *stypes) {
+    if (!type_assign(&stype, target_stype)) {
       success = false;
     }
   }
@@ -350,11 +351,12 @@ inline bool storage_type_assign(StorageTypeVector* stypes,
 
 /*! \brief update the stype vector to default storage and dispatch_mode to fallback
  */
-inline void dispatch_fallback(StorageTypeVector* stypes, DispatchMode* dispatch) {
+inline bool dispatch_fallback(StorageTypeVector* stypes, DispatchMode* dispatch) {
   for (auto& stype : *stypes) {
     type_assign(&stype, kDefaultStorage);
   }
   DISPATCH_MODE_ASSIGN_CHECK(dispatch, 0, DispatchMode::kFComputeFallback);
+  return true;
 }
 
 // make a new node with operator op_name. Inputs are not filled.
@@ -394,7 +396,7 @@ inline std::vector<nnvm::NodeEntry> MakeGradNode(
   auto p = MakeNode(op_name, n->attrs.name + "_backward",
                     &inputs, &dict, &n);
   std::vector<nnvm::NodeEntry> ret;
-  for (index_t i = 0; i < p->num_outputs(); ++i) {
+  for (uint32_t i = 0; i < p->num_outputs(); ++i) {
     ret.emplace_back(nnvm::NodeEntry{p, i, 0});
   }
   return ret;
@@ -405,7 +407,7 @@ inline std::vector<nnvm::NodeEntry> MakeZeroGradNodes(
     const nnvm::NodePtr& n,
     const std::vector<nnvm::NodeEntry>& ograds) {
   std::vector<nnvm::NodeEntry> ret;
-  for (index_t i = 0; i < n->num_inputs(); ++i) {
+  for (uint32_t i = 0; i < n->num_inputs(); ++i) {
     std::ostringstream os;
     if (1 == n->num_inputs()) {
       os << n->attrs.name << "_backward";
@@ -444,7 +446,7 @@ inline std::vector<nnvm::NodeEntry> MakeNonlossGradNode(
   p->inputs.insert(p->inputs.end(), ograds.begin(), ograds.end());
   p->inputs.insert(p->inputs.end(), inputs.begin(), inputs.end());
   std::vector<nnvm::NodeEntry> ret;
-  for (index_t i = 0; i < p->num_outputs(); ++i) {
+  for (uint32_t i = 0; i < p->num_outputs(); ++i) {
     ret.emplace_back(nnvm::NodeEntry{p, i, 0});
   }
   return ret;
@@ -470,80 +472,151 @@ inline void ParamParser(nnvm::NodeAttrs* attrs) {
   attrs->parsed = std::move(param);
 }
 
-#define CHECK_RSP_ALL_ROWS_NON_ZERO(rsp, func, param)                              \
-  {                                                                                \
-    CHECK(rsp.storage_shape()[0] == rsp.shape()[0]) << func                        \
-          << " for RowSparse " << param << " is only implemented for "             \
-          << "RowSparse " << param << " with all rows containing non-zeros. "      \
-          << "Expects " << param << ".values.shape[0] (" << rsp.storage_shape()[0] \
-          << ") == " << param << ".shape[0] (" << rsp.shape()[0] << ").";          \
+inline void CheckAllRowsPresent(const NDArray& arr, const std::string& func,
+                                const std::string& param) {
+  if (arr.storage_type() == kRowSparseStorage) {
+    CHECK(arr.storage_shape()[0] == arr.shape()[0]) << func
+          << " for RowSparse " << param << " is only implemented for "
+          << "RowSparse " << param << " with all rows containing non-zeros. "
+          << "Expects " << param << ".data.shape[0] (" << arr.storage_shape()[0]
+          << ") == " << param << ".shape[0] (" << arr.shape()[0] << ").";
+  } else {
+    CHECK(arr.storage_type() == kDefaultStorage);
   }
-
-/*! \brief get string representation of the operator stypes */
-inline std::string operator_stype_string(const nnvm::NodeAttrs& attrs,
-                                         const int dev_mask,
-                                         const std::vector<int>& in_attrs,
-                                         const std::vector<int>& out_attrs) {
-  std::string result = "";
-  result += "operator = " + attrs.op->name + "\n";
-  result += "input storage types = [";
-  for (const auto attr : in_attrs) {
-    result += common::stype_string(attr) + ", ";
-  }
-  result += "]\n";
-  result += "output storage types = [";
-  for (const auto attr : out_attrs) {
-    result += common::stype_string(attr) + ", ";
-  }
-  result += "]\n";
-  result += "params = {";
-  for (auto kv : attrs.dict) {
-    result += "\"" + kv.first + "\" : " + kv.second + ", ";
-  }
-  result += "}\n";
-  result += "context.dev_mask = " + std::to_string(dev_mask);
-  return result;
 }
 
-/*! \brief get string representation of the operator */
-inline std::string operator_string(const nnvm::NodeAttrs& attrs,
-                                  const OpContext& ctx,
-                                  const std::vector<NDArray>& inputs,
-                                  const std::vector<OpReqType>& req,
-                                  const std::vector<NDArray>& outputs) {
-  std::string result = "";
-  std::vector<int> in_stypes;
-  std::vector<int> out_stypes;
-  auto xform = [](const NDArray arr) -> int { return arr.storage_type(); };
-  std::transform(inputs.begin(), inputs.end(), std::back_inserter(in_stypes), xform);
-  std::transform(outputs.begin(), outputs.end(), std::back_inserter(out_stypes), xform);
-  result += operator_stype_string(attrs, ctx.run_ctx.ctx.dev_mask(), in_stypes, out_stypes);
-  return result;
+inline void LogUnimplementedOp(const nnvm::NodeAttrs& attrs,
+                               const OpContext &ctx,
+                               const std::vector<NDArray> &inputs,
+                               const std::vector<OpReqType> &req,
+                               const std::vector<NDArray> &outputs) {
+    using common::operator_string;
+    LOG(FATAL) << "Not implemented: " << operator_string(attrs, ctx, inputs, req, outputs);
 }
 
-/*! \brief log storage fallback event
- */
-inline void LogStorageFallback(const nnvm::NodeAttrs& attrs,
-                               const int dev_mask,
-                               const std::vector<int>* in_attrs,
-                               const std::vector<int>* out_attrs) {
-  using namespace op;
-  auto warning_printed = dmlc::ThreadLocalStore<std::unordered_set<std::string>>::Get();
-  static bool log_verbose = dmlc::GetEnv("MXNET_STORAGE_FALLBACK_LOG_VERBOSE", true);
-  if (log_verbose) {
-    std::string warning = operator_stype_string(attrs, dev_mask, *in_attrs, *out_attrs);
-    if (warning_printed->find(warning) == warning_printed->end()) {
-      LOG(INFO) << "\nStorage fallback detected:\n" << warning
-                << "\nThe operator with default storage type will be dispatched for execution. "
-                << "You're seeing this warning message because the operator above is unable to "
-                << "process the given ndarrays with specified storage types and parameter. "
-                << "Temporary dense ndarrays are generated in order to execute the operator. "
-                << "You can set environment variable MXNET_STORAGE_FALLBACK_LOG_VERBOSE "
-                << "to 0 to suppress the warnings.";
-      warning_printed->insert(warning);
+class OpSignature {
+  std::vector<int64_t> eles;
+  uint64_t hash;
+
+ public:
+  OpSignature() {
+    hash = 0;
+  }
+
+  explicit OpSignature(uint64_t hash) {
+    this->hash = hash;
+  }
+
+  /*
+   * This is to reserve space for the vector.
+   */
+  void Reserve(size_t num) {
+    eles.reserve(num);
+  }
+
+  /*
+   * We provide different methods to add signature to an op.
+   * For operations, such as convolutin and fully connected, which determines
+   * the optimal data layout for the op, we only need to use the shape and data
+   * type to sign the op. For other operations, such as activation, which uses
+   * whatever layout in the input array, we have to use the shape, the data type
+   * and the layout to sign the op.
+   */
+
+#if MXNET_USE_MKLDNN == 1
+  void AddSign(const mkldnn::memory &mem) {
+    auto desc = mem.get_primitive_desc().desc();
+    hash = hash * 2 + desc.data.format;
+    eles.push_back(desc.data.format);
+    hash = hash * 2 + desc.data.data_type;
+    eles.push_back(desc.data.data_type);
+    for (int i = 0; i < desc.data.ndims; i++) {
+      hash = hash * 2 + desc.data.dims[i];
+      eles.push_back(desc.data.dims[i]);
     }
   }
-}
+#endif
+
+  void AddSign(const std::vector<NDArray> &arrs) {
+    for (auto &arr : arrs) {
+      AddSign(arr);
+    }
+  }
+
+  void AddSign(const NDArray &arr) {
+#if MXNET_USE_MKLDNN == 1
+    if (arr.IsMKLDNNData()) {
+      AddSign(*(arr.GetMKLDNNData()));
+    } else {
+#endif
+      hash = hash * 2 + arr.dtype();
+      eles.push_back(arr.dtype());
+      AddSign(arr.shape());
+#if MXNET_USE_MKLDNN == 1
+    }
+#endif
+  }
+
+  void AddSign(const mxnet::ShapeVector &shapes) {
+    for (auto &shape : shapes) {
+      AddSign(shape);
+    }
+  }
+
+  void AddSign(const mxnet::TShape &shape) {
+    for (int i = 0; i < shape.ndim(); i++) {
+      hash = hash * 2 + shape[i];
+      eles.push_back(shape[i]);
+    }
+  }
+
+  void AddSign(int val) {
+    hash = hash * 2 + val;
+    eles.push_back(val);
+  }
+
+  bool operator==(const OpSignature &sign) const {
+    if (hash != sign.hash)
+      return false;
+    if (eles.size() != sign.eles.size())
+      return false;
+    for (size_t i = 0; i < eles.size(); i++)
+      if (eles[i] != sign.eles[i])
+        return false;
+    return true;
+  }
+
+  uint64_t GetHash() const {
+    return hash;
+  }
+};
+
+struct OpHash {
+  size_t operator()(const OpSignature &sign) const {
+    return sign.GetHash();
+  }
+};
+
+template<typename ParamType>
+class ParamOpSign: public OpSignature {
+  const ParamType param;
+
+  static size_t hash(const ParamType &param) {
+    std::hash<ParamType> fn;
+    return fn(param);
+  }
+
+ public:
+  explicit ParamOpSign(const ParamType &_param): OpSignature(
+      hash(_param)), param(_param) {
+  }
+
+  bool operator==(const ParamOpSign<ParamType> &sign) const {
+    const OpSignature &this_upper = *this;
+    const OpSignature &other_upper = sign;
+    return this_upper == other_upper && param == sign.param;
+  }
+};
 
 }  // namespace op
 }  // namespace mxnet

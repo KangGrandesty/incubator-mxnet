@@ -20,10 +20,13 @@
 """Inception, implemented in Gluon."""
 __all__ = ['Inception3', 'inception_v3']
 
+import os
+
 from ....context import cpu
 from ...block import HybridBlock
 from ... import nn
-from ..custom_layers import HybridConcurrent
+from ...contrib.nn import HybridConcurrent
+from .... import base
 
 # Helpers
 def _make_basic_conv(**kwargs):
@@ -49,7 +52,7 @@ def _make_branch(use_pool, *conv_settings):
     return out
 
 def _make_A(pool_features, prefix):
-    out = HybridConcurrent(concat_dim=1, prefix=prefix)
+    out = HybridConcurrent(axis=1, prefix=prefix)
     with out.name_scope():
         out.add(_make_branch(None,
                              (64, 1, None, None)))
@@ -65,7 +68,7 @@ def _make_A(pool_features, prefix):
     return out
 
 def _make_B(prefix):
-    out = HybridConcurrent(concat_dim=1, prefix=prefix)
+    out = HybridConcurrent(axis=1, prefix=prefix)
     with out.name_scope():
         out.add(_make_branch(None,
                              (384, 3, 2, None)))
@@ -77,7 +80,7 @@ def _make_B(prefix):
     return out
 
 def _make_C(channels_7x7, prefix):
-    out = HybridConcurrent(concat_dim=1, prefix=prefix)
+    out = HybridConcurrent(axis=1, prefix=prefix)
     with out.name_scope():
         out.add(_make_branch(None,
                              (192, 1, None, None)))
@@ -96,7 +99,7 @@ def _make_C(channels_7x7, prefix):
     return out
 
 def _make_D(prefix):
-    out = HybridConcurrent(concat_dim=1, prefix=prefix)
+    out = HybridConcurrent(axis=1, prefix=prefix)
     with out.name_scope():
         out.add(_make_branch(None,
                              (192, 1, None, None),
@@ -110,7 +113,7 @@ def _make_D(prefix):
     return out
 
 def _make_E(prefix):
-    out = HybridConcurrent(concat_dim=1, prefix=prefix)
+    out = HybridConcurrent(axis=1, prefix=prefix)
     with out.name_scope():
         out.add(_make_branch(None,
                              (320, 1, None, None)))
@@ -119,7 +122,7 @@ def _make_E(prefix):
         out.add(branch_3x3)
         branch_3x3.add(_make_branch(None,
                                     (384, 1, None, None)))
-        branch_3x3_split = HybridConcurrent(concat_dim=1, prefix='')
+        branch_3x3_split = HybridConcurrent(axis=1, prefix='')
         branch_3x3_split.add(_make_branch(None,
                                           (384, (1, 3), None, (0, 1))))
         branch_3x3_split.add(_make_branch(None,
@@ -131,7 +134,7 @@ def _make_E(prefix):
         branch_3x3dbl.add(_make_branch(None,
                                        (448, 1, None, None),
                                        (384, 3, None, 1)))
-        branch_3x3dbl_split = HybridConcurrent(concat_dim=1, prefix='')
+        branch_3x3dbl_split = HybridConcurrent(axis=1, prefix='')
         branch_3x3dbl.add(branch_3x3dbl_split)
         branch_3x3dbl_split.add(_make_branch(None,
                                              (384, (1, 3), None, (0, 1))))
@@ -196,7 +199,8 @@ class Inception3(HybridBlock):
         return x
 
 # Constructor
-def inception_v3(pretrained=False, ctx=cpu(), root='~/.mxnet/models', **kwargs):
+def inception_v3(pretrained=False, ctx=cpu(),
+                 root=os.path.join(base.data_dir(), 'models'), **kwargs):
     r"""Inception v3 model from
     `"Rethinking the Inception Architecture for Computer Vision"
     <http://arxiv.org/abs/1512.00567>`_ paper.
@@ -207,11 +211,11 @@ def inception_v3(pretrained=False, ctx=cpu(), root='~/.mxnet/models', **kwargs):
         Whether to load the pretrained weights for model.
     ctx : Context, default CPU
         The context in which to load the pretrained weights.
-    root : str, default '~/.mxnet/models'
+    root : str, default $MXNET_HOME/models
         Location for keeping the model parameters.
     """
     net = Inception3(**kwargs)
     if pretrained:
         from ..model_store import get_model_file
-        net.load_params(get_model_file('inceptionv3', root=root), ctx=ctx)
+        net.load_parameters(get_model_file('inceptionv3', root=root), ctx=ctx)
     return net

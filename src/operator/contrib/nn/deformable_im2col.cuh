@@ -1,22 +1,3 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 /*!
  ******************* BEGIN Caffe Copyright Notice and Disclaimer ****************
  *
@@ -302,8 +283,8 @@ __global__ void deformable_im2col_gpu_kernel(const int n, const DType* data_im, 
 template <typename DType>
 inline void deformable_im2col(mshadow::Stream<gpu>* s,
   const DType* data_im, const DType* data_offset,
-  const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride, const TShape& dilation,
+  const mxnet::TShape& im_shape, const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride, const mxnet::TShape& dilation,
   const uint32_t deformable_group, DType* data_col) {
   // num_axes should be smaller than block size
   index_t num_spatial_axes = kernel_shape.ndim();
@@ -400,9 +381,9 @@ __global__ void deformable_col2im_gpu_kernel(const int n, const DType* data_col,
 template <typename DType>
 inline void deformable_col2im(mshadow::Stream<gpu>* s,
   const DType* data_col, const DType* data_offset,
-  const TShape& im_shape, const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride,
-  const TShape& dilation, const uint32_t deformable_group,
+  const mxnet::TShape& im_shape, const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride,
+  const mxnet::TShape& dilation, const uint32_t deformable_group,
   DType* grad_im, OpReqType req) {
   index_t num_spatial_axes = kernel_shape.ndim();
   index_t im_size = im_shape.ProdShape(1, im_shape.ndim());
@@ -508,10 +489,10 @@ __global__ void deformable_col2im_coord_gpu_kernel(const int n, const DType* dat
  */
 template <typename DType>
 inline void deformable_col2im_coord(mshadow::Stream<gpu>* s,
-  const DType* data_col, const DType* data_im, const DType* data_offset, const TShape& im_shape,
-  const TShape& col_shape, const TShape& kernel_shape,
-  const TShape& pad, const TShape& stride,
-  const TShape& dilation, const uint32_t deformable_group, DType* grad_offset, OpReqType req) {
+  const DType* data_col, const DType* data_im, const DType* data_offset, const mxnet::TShape& im_shape,
+  const mxnet::TShape& col_shape, const mxnet::TShape& kernel_shape,
+  const mxnet::TShape& pad, const mxnet::TShape& stride,
+  const mxnet::TShape& dilation, const uint32_t deformable_group, DType* grad_offset, OpReqType req) {
   index_t num_spatial_axes = kernel_shape.ndim();
   index_t num_kernels = col_shape[1] * col_shape[2] * 2 * kernel_shape[0] * kernel_shape[1] * deformable_group;
   index_t channel_per_deformable_group = col_shape[0] / deformable_group;
@@ -529,7 +510,7 @@ inline void deformable_col2im_coord(mshadow::Stream<gpu>* s,
         num_kernels, data_col, data_im, data_offset, im_shape[1], im_shape[2], im_shape[3],
         kernel_shape[0], kernel_shape[1], pad[0], pad[1], stride[0], stride[1],
         dilation[0], dilation[1], channel_per_deformable_group, col_shape[1], col_shape[2], grad_offset, req);
-    MSHADOW_CUDA_POST_KERNEL_CHECK(deformable_col2im_gpu_kernel);
+    MSHADOW_CUDA_POST_KERNEL_CHECK(deformable_col2im_coord_gpu_kernel);
     break;
   default:
     LOG(FATAL) << "col2im_nd_gpu does not support computation with "

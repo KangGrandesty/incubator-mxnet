@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Frequently Asked Questions
 
 This topic provides answers to the frequently asked questions on [mxnet/issues](https://github.com/dmlc/mxnet/issues). Before posting an issue, please check this page. If you would like to contribute to this page, please make the questions and answers simple. If your answer is  extremely detailed, please post it elsewhere and link to it.
@@ -48,10 +65,10 @@ copied_model =  mx.model.FeedForward(ctx=mx.gpu(), symbol=new_symbol,
                                      arg_params=old_arg_params, aux_params=old_aux_params,
                                      allow_extra_params=True);
 ```
-For information about copying model parameters from an existing ```old_arg_params```, see this [notebook](https://github.com/dmlc/mxnet-notebooks/blob/master/python/how_to/predict.ipynb). More notebooks please refer to [dmlc/mxnet-notebooks](https://github.com/dmlc/mxnet-notebooks).
+For information about copying model parameters from an existing ```old_arg_params```, see this [notebook](https://github.com/dmlc/mxnet-notebooks/blob/master/python/faq/predict.ipynb). More notebooks please refer to [dmlc/mxnet-notebooks](https://github.com/dmlc/mxnet-notebooks).
 
 #### How to Extract the Feature Map of a Certain Layer
-See this [notebook](https://github.com/dmlc/mxnet-notebooks/blob/master/python/how_to/predict.ipynb). More notebooks please refer to [dmlc/mxnet-notebooks](https://github.com/dmlc/mxnet-notebooks).
+See this [notebook](https://github.com/dmlc/mxnet-notebooks/blob/master/python/faq/predict.ipynb). More notebooks please refer to [dmlc/mxnet-notebooks](https://github.com/dmlc/mxnet-notebooks).
 
 
 #### What Is the Relationship Between MXNet and CXXNet, Minerva, and Purine2?

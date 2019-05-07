@@ -16,6 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
+/*!
+ *  Copyright (c) 2016 by Contributors
+ * \file elemwise_binary_op.cc
+ * \brief CPU implementation of elementwise binary operators
+ */
+
 #include "./elemwise_binary_op.h"
 
 
@@ -46,12 +53,9 @@ bool ElemwiseBinaryOp::SparseSparseWithDenseResult(const nnvm::NodeAttrs& attrs,
     dispatched = storage_type_assign(&out_stype, kDefaultStorage, dispatch_mode, dispatch_ex);
   }
   if (!dispatched) {
-    dispatch_fallback(out_attrs, dispatch_mode);
+    dispatched = dispatch_fallback(out_attrs, dispatch_mode);
   }
-  if (*dispatch_mode == DispatchMode::kFComputeFallback) {
-    LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
-  }
-  return true;
+  return dispatched;
 }
 
 bool ElemwiseBinaryOp::BackwardUseInStorageType(const nnvm::NodeAttrs& attrs,
@@ -66,6 +70,11 @@ bool ElemwiseBinaryOp::BackwardUseInStorageType(const nnvm::NodeAttrs& attrs,
   const bool invalid_ctx = dev_mask != mshadow::cpu::kDevMask;
   const auto dispatch_ex = invalid_ctx ? DispatchMode::kFComputeFallback :
                            DispatchMode::kFComputeEx;
+  const int ograd_stype = in_attrs->at(0);
+  const int lhs_stype = in_attrs->at(1);
+  const int rhs_stype = in_attrs->at(2);
+  int& lhs_grad_stype = out_attrs->at(0);
+  int& rhs_grad_stype = out_attrs->at(1);
   if (!dispatched && common::ContainsOnlyStorage(*in_attrs, kDefaultStorage)) {
     dispatched = storage_type_assign(out_attrs, kDefaultStorage,
                                      dispatch_mode, DispatchMode::kFCompute);
@@ -77,13 +86,26 @@ bool ElemwiseBinaryOp::BackwardUseInStorageType(const nnvm::NodeAttrs& attrs,
                                        dispatch_mode, dispatch_ex);
     }
   }
+  if (!dispatched && ograd_stype == kDefaultStorage &&
+      ((lhs_stype == kCSRStorage && rhs_stype == kDefaultStorage) ||
+       (lhs_stype == kDefaultStorage && rhs_stype == kCSRStorage))) {
+    const bool reverse = (lhs_stype == kCSRStorage);
+    if (reverse &&
+        type_assign(&lhs_grad_stype, kDefaultStorage) &&
+        type_assign(&rhs_grad_stype, kCSRStorage)) {
+      DISPATCH_MODE_ASSIGN_CHECK(dispatch_mode, 0, DispatchMode::kFComputeEx);
+      dispatched = true;
+    } else if (!reverse &&
+               type_assign(&lhs_grad_stype, kCSRStorage) &&
+               type_assign(&rhs_grad_stype, kDefaultStorage)) {
+      DISPATCH_MODE_ASSIGN_CHECK(dispatch_mode, 0, DispatchMode::kFComputeEx);
+      dispatched = true;
+    }
+  }
   if (!dispatched) {
-    dispatch_fallback(out_attrs, dispatch_mode);
+    dispatched = dispatch_fallback(out_attrs, dispatch_mode);
   }
-  if (*dispatch_mode == DispatchMode::kFComputeFallback) {
-    LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
-  }
-  return true;
+  return dispatched;
 }
 
 }  // namespace op

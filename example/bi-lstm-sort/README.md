@@ -1,28 +1,31 @@
-This is an example of using bidirection lstm to sort an array.
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
 
-Firstly, generate data by:
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
 
-	python gen_data.py
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
 
-Move generated txt files to data directory
+# Bidirectionnal LSTM to sort an array.
 
-	mkdir data
-	mv *.txt data
+This is an example of using bidirectionmal lstm to sort an array. Please refer to the notebook.
 
-Then, train the model by:
+We train a bidirectionnal LSTM to sort an array of integer.
 
-    python lstm_sort.py
+For example:
 
-At last, test model by:
+`500 30 999 10 130` should give us `10 30 130 500 999`
 
-    python infer_sort.py 234 189 785 763 231
-
-and will output sorted seq
-
-    189
-	231
-	234
-	763
-	785
+![](https://cdn-images-1.medium.com/max/1200/1*6QnPUSv_t9BY9Fv8_aLb-Q.png)
 
 
+([Diagram source](http://colah.github.io/posts/2015-09-NN-Types-FP/))

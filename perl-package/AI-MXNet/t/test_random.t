@@ -1,6 +1,23 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 use strict;
 use warnings;
-use Test::More tests => 505;
+use Test::More tests => 515;
 use AI::MXNet qw(mx);
 use AI::MXNet::TestUtils qw(same enumerate);
 
@@ -15,6 +32,15 @@ sub check_with_device
             ndop   => sub { mx->nd->random->normal(@_)  },
             params => { loc => 10.0, scale => 0.5 },
             inputs => [ [loc => [ [ 0.0, 2.5 ], [ -9.75, -7.0 ] ]] , [scale => [ [ 1.0, 3.7 ], [ 4.2, 1.5 ] ]] ],
+            checks => [
+                [mean => sub { my ($x, $params) = @_; $x->astype('float64')->aspdl->avg - $params->{loc} }, $tol],
+                [std  => sub { my ($x, $params) = @_; ($x->astype('float64')->aspdl->stats)[6] - $params->{scale} }, $tol]
+            ]
+        },
+        {
+            name => 'randn',
+            ndop => sub { mx->nd->random->randn(@_) },
+            params => { loc => 10.0, scale => 0.5 },
             checks => [
                 [mean => sub { my ($x, $params) = @_; $x->astype('float64')->aspdl->avg - $params->{loc} }, $tol],
                 [std  => sub { my ($x, $params) = @_; ($x->astype('float64')->aspdl->stats)[6] - $params->{scale} }, $tol]
@@ -87,7 +113,7 @@ sub check_with_device
             ]
         },
     );
-    my $shape = [100, 100];
+    my $shape = [1000, 1000];
     for my $symbdic (@symbols)
     {
         my $name = $symbdic->{name};
@@ -109,6 +135,7 @@ sub check_with_device
         }
 
         # check multi-distribution sampling, only supports cpu for now
+        next unless $symbdic->{inputs};
         %params = (shape=>$shape, dtype=>$dtype, ctx=>$device);
         %params = (%params, map { $_->[0] => mx->nd->array($_->[1], ctx=>$device, dtype=>$dtype) } @{ $symbdic->{inputs} });
         mx->random->seed(128);
@@ -132,6 +159,7 @@ sub check_with_device
 
         # check symbolic
         my $symbol = $symbdic->{symbol};
+        next if not $symbol;
         my $X = mx->sym->Variable("X");
         %params = %{ $symbdic->{params} };
         %params = (%params, shape=>$shape, dtype=>$dtype);
@@ -208,3 +236,13 @@ sub test_sample_multinomial
 
 test_sample_multinomial();
 
+sub test_seed_context
+{
+    ## only checking perl/swig interaction
+    ## c++ implementation is tested on python's side thoroughly already
+    mx->random->seed(1234);
+    mx->random->seed(1234, ctx => mx->cpu(0));
+    ok(1);
+}
+
+test_seed_context();

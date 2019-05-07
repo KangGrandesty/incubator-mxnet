@@ -23,9 +23,11 @@
  * \brief threaded engine tests
 */
 #include <time.h>
-#include <unistd.h>
 #include <dmlc/logging.h>
+#include <dmlc/thread_group.h>
+#include <dmlc/omp.h>
 #include <gtest/gtest.h>
+#include <mxnet/c_api.h>
 #include <mxnet/engine.h>
 #include <dmlc/timer.h>
 #include <cstdio>
@@ -34,12 +36,13 @@
 #include <vector>
 
 #include "../src/engine/engine_impl.h"
+#include "../include/test_util.h"
 
 /**
  * present the following workload
  *  n = reads.size()
  *  data[write] = (data[reads[0]] + ... data[reads[n]]) / n
- *  std::this_thread::sleep_for(std::chrono::microsecons(time));
+ *  std::this_thread::sleep_for(std::chrono::microseconds(time));
  */
 struct Workload {
   std::vector<int> reads;
@@ -47,7 +50,7 @@ struct Workload {
   int time;
 };
 
-static u_int32_t seed_ = 0xdeadbeef;
+static uint32_t seed_ = 0xdeadbeef;
 
 /**
  * generate a list of workloads
@@ -73,7 +76,7 @@ void GenerateWorkload(int num_workloads, int num_var,
 /**
  * evaluate a single workload
  */
-void EvaluateWorload(const Workload& wl, std::vector<double>* data) {
+void EvaluateWorkload(const Workload& wl, std::vector<double>* data) {
   double tmp = 0;
   for (int i : wl.reads) tmp += data->at(i);
   data->at(wl.write) = tmp / (wl.reads.size() + 1);
@@ -85,9 +88,9 @@ void EvaluateWorload(const Workload& wl, std::vector<double>* data) {
 /**
  * evaluate a list of workload, return the time used
  */
-double EvaluateWorloads(const std::vector<Workload>& workloads,
-                      mxnet::Engine* engine,
-                      std::vector<double>* data) {
+double EvaluateWorkloads(const std::vector<Workload>& workloads,
+                         mxnet::Engine* engine,
+                         std::vector<double>* data) {
   using namespace mxnet;
   double t = dmlc::GetTime();
   std::vector<Engine::VarHandle> vars;
@@ -100,10 +103,10 @@ double EvaluateWorloads(const std::vector<Workload>& workloads,
   for (const auto& wl : workloads) {
     if (wl.reads.size() == 0) continue;
     if (engine == NULL) {
-      EvaluateWorload(wl, data);
+      EvaluateWorkload(wl, data);
     } else {
       auto func = [wl, data](RunContext ctx, Engine::CallbackOnComplete cb) {
-        EvaluateWorload(wl, data); cb();
+        EvaluateWorkload(wl, data); cb();
       };
       std::vector<Engine::VarHandle> reads;
       for (auto i : wl.reads) {
@@ -117,6 +120,23 @@ double EvaluateWorloads(const std::vector<Workload>& workloads,
     engine->WaitForAll();
   }
   return dmlc::GetTime() - t;
+}
+
+TEST(Engine, start_stop) {
+  const int num_engine = 3;
+  std::vector<mxnet::Engine*> engine(num_engine);
+  engine[0] = mxnet::engine::CreateNaiveEngine();
+  engine[1] = mxnet::engine::CreateThreadedEnginePooled();
+  engine[2] = mxnet::engine::CreateThreadedEnginePerDevice();
+  std::string type_names[3] = {"NaiveEngine", "ThreadedEnginePooled", "ThreadedEnginePerDevice"};
+
+  for (int i = 0; i < num_engine; ++i) {
+    LOG(INFO) << "Stopping: " << type_names[i];
+    engine[i]->Stop();
+    LOG(INFO) << "Stopped: " << type_names[i] << " Starting...";
+    engine[i]->Start();
+    LOG(INFO) << "Started: " << type_names[i] << " Done...";
+  }
 }
 
 TEST(Engine, RandSumExpr) {
@@ -139,7 +159,7 @@ TEST(Engine, RandSumExpr) {
     std::vector<std::vector<double>> data(num_engine);
     for (int i = 0; i < num_engine; ++i) {
       data[i].resize(num_var, 1.0);
-      t[i] += EvaluateWorloads(workloads, engine[i], &data[i]);
+      t[i] += EvaluateWorkloads(workloads, engine[i], &data[i]);
     }
 
     for (int i = 1; i < num_engine; ++i) {
@@ -156,6 +176,83 @@ TEST(Engine, RandSumExpr) {
 }
 
 void Foo(mxnet::RunContext, int i) { printf("The fox says %d\n", i); }
+
+void FooAsyncFunc(void*, void* cb_ptr, void* param) {
+  if (param == nullptr) {
+    LOG(INFO) << "The fox asynchronously says receiving nothing.";
+  } else {
+    auto num = static_cast<int*>(param);
+    EXPECT_EQ(*num, 100);
+    LOG(INFO) << "The fox asynchronously says receiving " << *num;
+  }
+  auto cb = *static_cast<mxnet::engine::CallbackOnComplete*>(cb_ptr);
+  cb();
+}
+
+void FooSyncFunc(void*, void* param) {
+  if (param == nullptr) {
+    LOG(INFO) << "The fox synchronously says receiving nothing.";
+  } else {
+    auto num = static_cast<int*>(param);
+    EXPECT_EQ(*num, 101);
+    LOG(INFO) << "The fox synchronously says receiving " << *num;
+  }
+}
+
+void FooFuncDeleter(void* param) {
+  if (param != nullptr) {
+    auto num = static_cast<int*>(param);
+    LOG(INFO) << "The fox says deleting " << *num;
+    delete num;
+  }
+}
+
+TEST(Engine, PushFunc) {
+  auto var = mxnet::Engine::Get()->NewVariable();
+  auto ctx = mxnet::Context{};
+
+  // Test #1
+  LOG(INFO) << "===== Test #1: PushAsync param and deleter =====";
+  int* a = new int(100);
+  int res = MXEnginePushAsync(FooAsyncFunc, a, FooFuncDeleter, &ctx, &var, 1, nullptr, 0);
+  EXPECT_EQ(res, 0);
+
+  // Test #2
+  LOG(INFO) << "===== Test #2: PushAsync NULL param and NULL deleter =====";
+  res = MXEnginePushAsync(FooAsyncFunc, nullptr, nullptr, &ctx, nullptr, 0, &var, 0);
+  EXPECT_EQ(res, 0);
+
+  // Test #3
+  LOG(INFO) << "===== Test #3: PushAsync invalid number of const vars =====";
+  res = MXEnginePushAsync(FooAsyncFunc, nullptr, nullptr, &ctx, &var, -1, nullptr, 0);
+  EXPECT_EQ(res, -1);
+
+  // Test #4
+  LOG(INFO) << "===== Test #4: PushAsync invalid number of mutable vars =====";
+  res = MXEnginePushAsync(FooAsyncFunc, nullptr, nullptr, &ctx, nullptr, 0, &var, -1);
+  EXPECT_EQ(res, -1);
+
+  // Test #5
+  LOG(INFO) << "===== Test #5: PushSync param and deleter =====";
+  int* b = new int(101);
+  res = MXEnginePushSync(FooSyncFunc, b, FooFuncDeleter, &ctx, &var, 1, nullptr, 0);
+  EXPECT_EQ(res, 0);
+
+  // Test #6
+  LOG(INFO) << "===== Test #6: PushSync NULL param and NULL deleter =====";
+  res = MXEnginePushSync(FooSyncFunc, nullptr, nullptr, &ctx, nullptr, 0, &var, 1);
+  EXPECT_EQ(res, 0);
+
+  // Test #7
+  LOG(INFO) << "===== Test #7: PushSync invalid number of const vars =====";
+  res = MXEnginePushSync(FooSyncFunc, nullptr, nullptr, &ctx, &var, -1, nullptr, 0);
+  EXPECT_EQ(res, -1);
+
+  // Test #8
+  LOG(INFO) << "===== Test #8: PushSync invalid number of mutable vars =====";
+  res = MXEnginePushSync(FooSyncFunc, nullptr, nullptr, &ctx, nullptr, 0, &var, -1);
+  EXPECT_EQ(res, -1);
+}
 
 TEST(Engine, basics) {
   auto&& engine = mxnet::Engine::Get();
@@ -255,3 +352,117 @@ TEST(Engine, basics) {
   oprs.clear();
   LOG(INFO) << "All pass";
 }
+
+TEST(Engine, VarVersion) {
+  const size_t num_engines = 3;
+  std::vector<mxnet::Engine*> engines(num_engines);
+  engines[0] = mxnet::engine::CreateNaiveEngine();
+  engines[1] = mxnet::engine::CreateThreadedEnginePooled();
+  engines[2] = mxnet::engine::CreateThreadedEnginePerDevice();
+  std::string type_names[3] = {"NaiveEngine", "ThreadedEnginePooled", "ThreadedEnginePerDevice"};
+  for (size_t k = 0; k < num_engines; ++k) {
+    auto engine = engines[k];
+    std::vector<mxnet::Engine::OprHandle> oprs;
+
+    LOG(INFO) << "Testing var as a read dependency in " << type_names[k];
+    auto var = engine->NewVariable();
+    EXPECT_EQ(var->version(), 0U);
+    for (int i = 0; i < 10; ++i) {
+      oprs.push_back(engine->NewOperator(
+          [i](mxnet::RunContext ctx, mxnet::Engine::CallbackOnComplete cb) {
+            Foo(ctx, i);
+            cb();
+          },
+          {var}, {}));
+      engine->Push(oprs.at(i), mxnet::Context{});
+    }
+    engine->WaitForAll();
+    EXPECT_EQ(var->version(), 0U);
+    for (auto&& i : oprs) {
+      engine->DeleteOperator(i);
+    }
+    engine->DeleteVariable([](mxnet::RunContext) {}, mxnet::Context{}, var);
+    engine->WaitForAll();
+
+    LOG(INFO) << "Testing var as a write dependency in " << type_names[k];
+    var = engine->NewVariable();
+    EXPECT_EQ(var->version(), 0U);
+    oprs.clear();
+    for (int i = 0; i < 10; ++i) {
+      oprs.push_back(engine->NewOperator(
+          [i](mxnet::RunContext ctx, mxnet::Engine::CallbackOnComplete cb) {
+            Foo(ctx, i);
+            cb();
+          },
+          {}, {var}));
+      engine->Push(oprs.at(i), mxnet::Context{});
+    }
+    engine->WaitForAll();
+    EXPECT_EQ(var->version(), 10U);
+    for (auto&& i : oprs) {
+      engine->DeleteOperator(i);
+    }
+    engine->DeleteVariable([](mxnet::RunContext) {}, mxnet::Context{}, var);
+    engine->WaitForAll();
+
+    var = nullptr;
+    oprs.clear();
+    LOG(INFO) << "All pass";
+  }
+}
+
+#ifdef _OPENMP
+
+struct TestSaveAndRestoreOMPState {
+  TestSaveAndRestoreOMPState() {
+    omp_set_dynamic(false);
+  }
+  ~TestSaveAndRestoreOMPState() {
+    omp_set_num_threads(nthreads_);
+    omp_set_dynamic(dynamic_);
+  }
+  const int nthreads_ = omp_get_max_threads();
+  const int dynamic_ = omp_get_dynamic();
+};
+
+/*!
+ * \brief This test checks that omp_set_num_threads implementation has thread-scope
+ */
+TEST(Engine, omp_threading_count_scope) {
+  TestSaveAndRestoreOMPState omp_state;
+  const int THREAD_COUNT = 10;
+  std::shared_ptr<dmlc::ManualEvent> ready = std::make_shared<dmlc::ManualEvent>();
+  std::shared_ptr<dmlc::ThreadGroup> threads = std::make_shared<dmlc::ThreadGroup>();
+  std::atomic<int> counter(0), correct(0);
+  omp_set_dynamic(0);
+  for (int x = 0; x < THREAD_COUNT; ++x) {
+    std::string name = "thread: ";
+    name += std::to_string(x + 1);
+    ++counter;
+    threads->create(name, false,
+                    [x, &counter, &correct](std::shared_ptr<dmlc::ManualEvent> ready_ptr) -> int {
+                      const int thread_count = x + 1;
+                      omp_set_num_threads(thread_count);
+                      --counter;
+                      ready_ptr->wait();
+                      CHECK_EQ(omp_get_max_threads(), thread_count);
+                      #pragma omp parallel for
+                      for (int i = 0; i < 100; ++i) {
+                        if (i == 50) {
+                          const int current_threads = omp_get_num_threads();
+                          if (current_threads == thread_count) {
+                            ++correct;
+                          }
+                        }
+                      }
+                      return 0;
+                    }, ready);
+  }
+  while (counter.load() > 0) {
+    usleep(100);
+  }
+  ready->signal();
+  threads->join_all();
+  GTEST_ASSERT_EQ(correct.load(), THREAD_COUNT);
+}
+#endif  // _OPENMP

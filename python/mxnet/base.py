@@ -16,54 +16,89 @@
 # under the License.
 
 # coding: utf-8
-# pylint: disable=invalid-name, no-member
+# pylint: disable=invalid-name, no-member, trailing-comma-tuple, bad-mcs-classmethod-argument, unnecessary-pass
 """ctypes library of mxnet and helper functions."""
 from __future__ import absolute_import
 
+from functools import wraps
+import atexit
+import ctypes
 import os
 import sys
-import ctypes
-import atexit
-import warnings
 import inspect
-import numpy as np
-from . import libinfo
-warnings.filterwarnings('default', category=DeprecationWarning)
+import platform
+import numpy as _np
 
-__all__ = ['MXNetError']
+from . import libinfo
+
+__all__ = ['MXNetError', 'is_np_compat', 'set_np_compat', 'np_compat', 'use_np_compat']
 #----------------------------
 # library loading
 #----------------------------
-if sys.version_info[0] == 3:
-    string_types = str,
-    numeric_types = (float, int, np.generic)
-    integer_types = int
+
+# pylint: disable=pointless-statement
+try:
+    basestring
+    long
+except NameError:
+    basestring = str
+    long = int
+# pylint: enable=pointless-statement
+
+integer_types = (int, long, _np.int32, _np.int64)
+numeric_types = (float, int, long, _np.generic)
+string_types = basestring,
+
+if sys.version_info[0] > 2:
     # this function is needed for python3
     # to convert ctypes.char_p .value back to python str
     py_str = lambda x: x.decode('utf-8')
 else:
-    string_types = basestring,
-    numeric_types = (float, int, long, np.generic)
-    integer_types = (int, long)
     py_str = lambda x: x
+
+
+def data_dir_default():
+    """
+
+    :return: default data directory depending on the platform and environment variables
+    """
+    system = platform.system()
+    if system == 'Windows':
+        return os.path.join(os.environ.get('APPDATA'), 'mxnet')
+    else:
+        return os.path.join(os.path.expanduser("~"), '.mxnet')
+
+
+def data_dir():
+    """
+
+    :return: data directory in the filesystem for storage, for example when downloading models
+    """
+    return os.getenv('MXNET_HOME', data_dir_default())
+
 
 class _NullType(object):
     """Placeholder for arguments"""
     def __repr__(self):
         return '_Null'
 
+
 _Null = _NullType()
+
 
 class MXNetError(Exception):
     """Error that will be throwed by all mxnet functions."""
     pass
 
+
 class NotImplementedForSymbol(MXNetError):
+    """Error: Not implemented for symbol"""
     def __init__(self, function, alias, *args):
         super(NotImplementedForSymbol, self).__init__()
         self.function = function.__name__
         self.alias = alias
         self.args = [str(type(a)) for a in args]
+
     def __str__(self):
         msg = 'Function {}'.format(self.function)
         if self.alias:
@@ -73,12 +108,15 @@ class NotImplementedForSymbol(MXNetError):
         msg += ' is not implemented for Symbol and only available in NDArray.'
         return msg
 
+
 class NotSupportedForSparseNDArray(MXNetError):
+    """Error: Not supported for SparseNDArray"""
     def __init__(self, function, alias, *args):
         super(NotSupportedForSparseNDArray, self).__init__()
         self.function = function.__name__
         self.alias = alias
         self.args = [str(type(a)) for a in args]
+
     def __str__(self):
         msg = 'Function {}'.format(self.function)
         if self.alias:
@@ -87,6 +125,7 @@ class NotSupportedForSparseNDArray(MXNetError):
             msg += ' with arguments ({})'.format(', '.join(self.args))
         msg += ' is not supported for SparseNDArray and only available in NDArray.'
         return msg
+
 
 class MXCallbackList(ctypes.Structure):
     """Structure that holds Callback information. Passed to CustomOpProp."""
@@ -97,6 +136,69 @@ class MXCallbackList(ctypes.Structure):
         ]
 
 
+# Please see: https://stackoverflow.com/questions/5189699/how-to-make-a-class-property
+class _MXClassPropertyDescriptor(object):
+    def __init__(self, fget, fset=None):
+        self.fget = fget
+        self.fset = fset
+
+    def __get__(self, obj, clas=None):
+        if clas is None:
+            clas = type(obj)
+        return self.fget.__get__(obj, clas)()
+
+    def __set__(self, obj, value):
+        if not self.fset:
+            raise MXNetError("cannot use the setter: %s to set attribute" % obj.__name__)
+        if inspect.isclass(obj):
+            type_ = obj
+            obj = None
+        else:
+            type_ = type(obj)
+        return self.fset.__get__(obj, type_)(value)
+
+    def setter(self, func):
+        if not isinstance(func, (classmethod, staticmethod)):
+            func = classmethod(func)
+        self.fset = func
+        return self
+
+
+class _MXClassPropertyMetaClass(type):
+    def __setattr__(cls, key, value):
+        obj = cls.__dict__.get(key)
+        if obj and isinstance(obj, _MXClassPropertyDescriptor):
+            return obj.__set__(cls, value)
+
+        return super(_MXClassPropertyMetaClass, cls).__setattr__(key, value)
+
+
+# with_metaclass function obtained from: https://github.com/benjaminp/six/blob/master/six.py
+# pylint: disable=unused-argument
+def with_metaclass(meta, *bases):
+    """Create a base class with a metaclass."""
+    # This requires a bit of explanation: the basic idea is to make a dummy
+    # metaclass for one level of class instantiation that replaces itself with
+    # the actual metaclass.
+    class metaclass(type):
+
+        def __new__(cls, name, this_bases, d):
+            return meta(name, bases, d)
+
+        @classmethod
+        def __prepare__(cls, name, this_bases):
+            return meta.__prepare__(name, bases)
+    return type.__new__(metaclass, 'temporary_class', (), {})
+# pylint: enable=unused-argument
+
+
+def classproperty(func):
+    if not isinstance(func, (classmethod, staticmethod)):
+        func = classmethod(func)
+
+    return _MXClassPropertyDescriptor(func)
+
+
 def _load_lib():
     """Load library by searching possible path."""
     lib_path = libinfo.find_lib_path()
@@ -105,16 +207,18 @@ def _load_lib():
     lib.MXGetLastError.restype = ctypes.c_char_p
     return lib
 
+
 # version number
 __version__ = libinfo.__version__
 # library instance of mxnet
 _LIB = _load_lib()
 
 # type definitions
+mx_int = ctypes.c_int
 mx_uint = ctypes.c_uint
 mx_float = ctypes.c_float
 mx_float_p = ctypes.POINTER(mx_float)
-mx_real_t = np.float32
+mx_real_t = _np.float32
 NDArrayHandle = ctypes.c_void_p
 FunctionHandle = ctypes.c_void_p
 OpHandle = ctypes.c_void_p
@@ -128,6 +232,10 @@ RecordIOHandle = ctypes.c_void_p
 RtcHandle = ctypes.c_void_p
 CudaModuleHandle = ctypes.c_void_p
 CudaKernelHandle = ctypes.c_void_p
+ProfileHandle = ctypes.c_void_p
+DLPackHandle = ctypes.c_void_p
+
+
 #----------------------------
 # helper function definition
 #----------------------------
@@ -224,6 +332,7 @@ else:
         arr[:] = [s.encode('utf-8') for s in strings]
         return arr
 
+
 def c_array(ctype, values):
     """Create ctypes array from a Python array.
 
@@ -281,6 +390,7 @@ def c_array_buf(ctype, buf):
     """
     return (ctype * len(buf)).from_buffer(buf)
 
+
 def c_handle_array(objs):
     """Create ctypes const void ** from a list of MXNet objects with handles.
 
@@ -297,6 +407,7 @@ def c_handle_array(objs):
     arr = (ctypes.c_void_p * len(objs))()
     arr[:] = [o.handle for o in objs]
     return arr
+
 
 def ctypes2buffer(cptr, length):
     """Convert ctypes pointer to buffer type.
@@ -320,6 +431,7 @@ def ctypes2buffer(cptr, length):
     if not ctypes.memmove(rptr, cptr, length):
         raise RuntimeError('memmove failed')
     return res
+
 
 def ctypes2numpy_shared(cptr, shape):
     """Convert a ctypes pointer to a numpy array.
@@ -345,7 +457,7 @@ def ctypes2numpy_shared(cptr, shape):
     for s in shape:
         size *= s
     dbuffer = (mx_float * size).from_address(ctypes.addressof(cptr.contents))
-    return np.frombuffer(dbuffer, dtype=np.float32).reshape(shape)
+    return _np.frombuffer(dbuffer, dtype=_np.float32).reshape(shape)
 
 
 def build_param_doc(arg_names, arg_types, arg_descs, remove_dup=True):
@@ -390,6 +502,7 @@ def build_param_doc(arg_names, arg_types, arg_descs, remove_dup=True):
 def _notify_shutdown():
     """Notify MXNet about a shutdown."""
     check_call(_LIB.MXNotifyShutdown())
+
 
 atexit.register(_notify_shutdown)
 
@@ -449,7 +562,7 @@ def _as_list(obj):
         return [obj]
 
 
-_OP_NAME_PREFIX_LIST = ['_contrib_', '_linalg_', '_sparse_']
+_OP_NAME_PREFIX_LIST = ['_contrib_', '_linalg_', '_sparse_', '_image_', '_random_']
 
 
 def _get_op_name_prefix(op_name):
@@ -463,7 +576,7 @@ def _get_op_name_prefix(op_name):
     return ""
 
 
-# pylint: enable=too-many-locals, invalid-name
+# pylint: enable=invalid-name
 def _init_op_module(root_namespace, module_name, make_op_func):
     """
     Registers op functions created by `make_op_func` under
@@ -503,10 +616,15 @@ def _init_op_module(root_namespace, module_name, make_op_func):
         hdl = OpHandle()
         check_call(_LIB.NNGetOpHandle(c_str(name), ctypes.byref(hdl)))
         op_name_prefix = _get_op_name_prefix(name)
+        module_name_local = module_name
         if len(op_name_prefix) > 0:
-            func_name = name[len(op_name_prefix):]
-            cur_module = submodule_dict[op_name_prefix]
-            module_name = "%s.%s.%s" % (root_namespace, module_name, op_name_prefix[1:-1])
+            if op_name_prefix != '_random_' or name.endswith('_like'):
+                func_name = name[len(op_name_prefix):]
+                cur_module = submodule_dict[op_name_prefix]
+                module_name_local = "%s.%s.%s" % (root_namespace, module_name, op_name_prefix[1:-1])
+            else:
+                func_name = name
+                cur_module = module_internal
         elif name.startswith('_'):
             func_name = name
             cur_module = module_internal
@@ -515,7 +633,7 @@ def _init_op_module(root_namespace, module_name, make_op_func):
             cur_module = module_op
 
         function = make_op_func(hdl, name, func_name)
-        function.__module__ = module_name
+        function.__module__ = module_name_local
         setattr(cur_module, function.__name__, function)
         cur_module.__all__.append(function.__name__)
 
@@ -549,17 +667,18 @@ def _generate_op_module_signature(root_namespace, module_name, op_code_gen_func)
         """Return the generated module file based on module name."""
         path = os.path.dirname(__file__)
         module_path = module_name.split('.')
-        module_path[-1] = 'gen_'+module_path[-1]
+        module_path[-1] = 'gen_' + module_path[-1]
         file_name = os.path.join(path, '..', *module_path) + '.py'
         module_file = open(file_name, 'w')
         dependencies = {'symbol': ['from ._internal import SymbolBase',
                                    'from ..base import _Null'],
                         'ndarray': ['from ._internal import NDArrayBase',
                                     'from ..base import _Null']}
-        module_file.write('# File content is auto-generated. Do not modify.'+os.linesep)
-        module_file.write('# pylint: skip-file'+os.linesep)
+        module_file.write('# File content is auto-generated. Do not modify.' + os.linesep)
+        module_file.write('# pylint: skip-file' + os.linesep)
         module_file.write(os.linesep.join(dependencies[module_name.split('.')[1]]))
         return module_file
+
     def write_all_str(module_file, module_all_list):
         """Write the proper __all__ based on available operators."""
         module_file.write(os.linesep)
@@ -613,3 +732,143 @@ def _generate_op_module_signature(root_namespace, module_name, op_code_gen_func)
     module_op_file.close()
     write_all_str(module_internal_file, module_internal_all)
     module_internal_file.close()
+
+ctypes.pythonapi.PyCapsule_New.restype = ctypes.py_object
+ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
+
+
+def set_np_compat(active):
+    """
+    Turns on/off NumPy compatibility. NumPy-compatibility is turned off by default in backend.
+
+    Parameters
+    ----------
+    active : bool
+        Indicates whether to turn on/off NumPy compatibility.
+
+    Returns
+    -------
+        A bool value indicating the previous state of NumPy compatibility.
+    """
+    prev = ctypes.c_int()
+    check_call(_LIB.MXSetIsNumpyCompatible(ctypes.c_int(active), ctypes.byref(prev)))
+    return bool(prev.value)
+
+
+def is_np_compat():
+    """
+    Checks whether the NumPy compatibility is currently turned on.
+    NumPy-compatibility is turned off by default in backend.
+
+    Returns
+    -------
+        A bool value indicating whether the NumPy compatibility is currently on.
+    """
+    curr = ctypes.c_bool()
+    check_call(_LIB.MXIsNumpyCompatible(ctypes.byref(curr)))
+    return curr.value
+
+
+class _NumpyCompatibilityStateScope(object):
+    """Scope for managing numpy compatibility state.
+    Do not use this class directly. Use `np_compat(active)` instead.
+
+    Example::
+
+        with _NumpyCompatibilityStateScope(True):
+            y = model(x)
+            backward([y])
+
+    """
+    def __init__(self, is_np_compat):  #pylint: disable=redefined-outer-name
+        self._enter_is_np_compat = is_np_compat
+        self._prev_is_np_compat = None
+
+    def __enter__(self):
+        if self._enter_is_np_compat is not None:
+            self._prev_is_np_compat = set_np_compat(self._enter_is_np_compat)
+
+    def __exit__(self, ptype, value, trace):
+        if self._enter_is_np_compat is not None and self._prev_is_np_compat != self._enter_is_np_compat:
+            set_np_compat(self._prev_is_np_compat)
+
+
+def np_compat(active=True):
+    """Returns an activated/deactivated NumPy compatibility state scope to be used in 'with' statement
+    and captures code that needs the compatibility.
+
+    Example::
+
+        with mx.np_compat(active=True):
+            # A scalar tensor's shape is `()`, whose `ndim` is `0`.
+            scalar = mx.nd.ones(shape=())
+            assert scalar.shape == ()
+
+            # In NumPy compatible mode, 0 in a shape means that dimension contains zero elements.
+            data = mx.sym.var("data", shape=(0, 2, 3))
+            ret = mx.sym.sin(data)
+            arg_shapes, out_shapes, _ = ret.infer_shape()
+            assert arg_shapes[0] == (0, 2, 3)
+            assert out_shapes[0] == (0, 2, 3)
+
+            # -1 means unknown shape dimension size in the new NumPy-compatible shape definition
+            data = mx.sym.var("data", shape=(-1, 2, 3))
+            ret = mx.sym.sin(data)
+            arg_shapes, out_shapes, _ = ret.infer_shape_partial()
+            assert arg_shapes[0] == (-1, 2, 3)
+            assert out_shapes[0] == (-1, 2, 3)
+
+            # When a shape is completely unknown in NumPy-compatible mode, it is
+            # represented as `None` in Python.
+            data = mx.sym.var("data")
+            ret = mx.sym.sin(data)
+            arg_shapes, out_shapes, _ = ret.infer_shape_partial()
+            assert arg_shapes[0] is None
+            assert out_shapes[0] is None
+
+        with mx.np_compat(active=False):
+            # 0 means unknown shape dimension size in the legacy shape definition.
+            data = mx.sym.var("data", shape=(0, 2, 3))
+            ret = mx.sym.sin(data)
+            arg_shapes, out_shapes, _ = ret.infer_shape_partial()
+            assert arg_shapes[0] == (0, 2, 3)
+            assert out_shapes[0] == (0, 2, 3)
+
+            # When a shape is completely unknown in the legacy mode (default), its ndim is
+            # equal to 0 and it is represented as `()` in Python.
+            data = mx.sym.var("data")
+            ret = mx.sym.sin(data)
+            arg_shapes, out_shapes, _ = ret.infer_shape_partial()
+            assert arg_shapes[0] == ()
+            assert out_shapes[0] == ()
+    """
+    return _NumpyCompatibilityStateScope(active)
+
+
+def use_np_compat(func):
+    """Wraps a function with an activated NumPy-compatibility scope. This ensures
+    that the execution of the function is guaranteed with NumPy compatible semantics,
+    such as zero-dim and zero size tensors.
+
+    Example::
+        import mxnet as mx
+        @mx.use_np_compat
+        def scalar_one():
+            return mx.nd.ones(())
+        print(scalar_one())
+
+    Parameters
+    ----------
+    func : a user-provided callable function to be scoped by the NumPy compatibility state.
+
+    Returns
+    -------
+    Function
+        A function for wrapping the user functions in the NumPy compatibility scope.
+    """
+    @wraps(func)
+    def _with_np_compat(*args, **kwargs):
+        with np_compat(active=True):
+            return func(*args, **kwargs)
+
+    return _with_np_compat

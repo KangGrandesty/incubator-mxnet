@@ -30,6 +30,8 @@ def parse_args():
                         default="", type=str)
     parser.add_argument('--network', dest='network', type=str, default='vgg16_reduced',
                         help='which network to use')
+    parser.add_argument('--num-batch', dest='num_batch', type=int, default=5,
+                        help='evaluation number batches')
     parser.add_argument('--batch-size', dest='batch_size', type=int, default=32,
                         help='evaluation batch size')
     parser.add_argument('--num-class', dest='num_class', type=int, default=20,
@@ -59,12 +61,12 @@ def parse_args():
                         help='non-maximum suppression threshold')
     parser.add_argument('--overlap', dest='overlap_thresh', type=float, default=0.5,
                         help='evaluation overlap threshold')
-    parser.add_argument('--force', dest='force_nms', type=bool, default=False,
+    parser.add_argument('--force', dest='force_nms', action='store_true',
                         help='force non-maximum suppression on different class')
-    parser.add_argument('--use-difficult', dest='use_difficult', type=bool, default=False,
+    parser.add_argument('--use-difficult', dest='use_difficult', action='store_true',
                         help='use difficult ground-truths in evaluation')
-    parser.add_argument('--voc07', dest='use_voc07_metric', type=bool, default=True,
-                        help='use PASCAL VOC 07 metric')
+    parser.add_argument('--no-voc07', dest='use_voc07_metric', action='store_false',
+                        help='dont use PASCAL VOC 07 metric')
     parser.add_argument('--deploy', dest='deploy_net', help='Load network from model',
                         action='store_true', default=False)
     args = parser.parse_args()
@@ -97,7 +99,7 @@ if __name__ == '__main__':
         prefix = args.prefix + args.network
     else:
         prefix = args.prefix
-    evaluate_net(network, args.rec_path, num_class,
+    evaluate_net(network, args.rec_path, num_class, args.num_batch,
                  (args.mean_r, args.mean_g, args.mean_b), args.data_shape,
                  prefix, args.epoch, ctx, batch_size=args.batch_size,
                  path_imglist=args.list_path, nms_thresh=args.nms_thresh,

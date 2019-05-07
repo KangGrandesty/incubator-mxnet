@@ -16,24 +16,17 @@
  * specific language governing permissions and limitations
  * under the License.
  */
+
+/*!
+ * \file elemwise_scatter_op.cc
+ * \brief CPU implementation of elementwise scatter operators
+ */
 #include "./elemwise_binary_op-inl.h"
 #include "./elemwise_binary_scalar_op.h"
 #include "./elemwise_scatter_op.h"
 
 namespace mxnet {
 namespace op {
-
-static bool fail_storage_type_inference(const NodeAttrs& attrs,
-                                        const int dev_mask,
-                                        DispatchMode* dispatch_mode,
-                                        std::vector<int>* in_attrs,
-                                        std::vector<int>* out_attrs) {
-  dispatch_fallback(out_attrs, dispatch_mode);
-  if (*dispatch_mode == DispatchMode::kFComputeFallback) {
-    LogStorageFallback(attrs, dev_mask, in_attrs, out_attrs);
-  }
-  return true;
-}
 
 static bool StorageTypeRspOrDenseOutput(const NodeAttrs& attrs,
                                         const int dev_mask,
@@ -57,7 +50,7 @@ static bool StorageTypeRspOrDenseOutput(const NodeAttrs& attrs,
       return true;
     }
   }
-  return fail_storage_type_inference(attrs, dev_mask, dispatch_mode, in_attrs, out_attrs);
+  return dispatch_fallback(out_attrs, dispatch_mode);
 }
 
 static bool StorageTypeScatteredScalarOp(const NodeAttrs& attrs,
@@ -74,7 +67,7 @@ static bool StorageTypeScatteredScalarOp(const NodeAttrs& attrs,
                                                   : DispatchMode::kFComputeEx)) {
     return true;
   }
-  return fail_storage_type_inference(attrs, dev_mask, dispatch_mode, in_attrs, out_attrs);
+  return dispatch_fallback(out_attrs, dispatch_mode);
 }
 
 /*! \brief _scatter_elemwise_div */

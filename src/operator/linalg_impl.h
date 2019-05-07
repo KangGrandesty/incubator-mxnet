@@ -18,7 +18,7 @@
  */
 
 /*!
- * \file linalg.h
+ * \file linalg_impl.h
  * \brief Implementation of unified tensor interface for advanced linear algebra functions
  * (specifically BLAS3/LAPACK) from within mxnet.
  */
@@ -56,6 +56,11 @@ inline void check_gemm(const Tensor<xpu, 2, DType>& A, const Tensor<xpu, 2, DTyp
     << "Non compatible matrix dimensions between inputs A and B for gemm";
 }
 
+template<typename xpu, typename DType>
+void linalg_gemm_axis(const Tensor<xpu, 3, DType>& A, const Tensor<xpu, 3, DType>& B,
+                      const Tensor<xpu, 3, DType>& C, DType alpha, DType beta,
+                      bool tA, bool tB, Stream<xpu> *s = 0);
+
 #if (MSHADOW_USE_CBLAS == 1 || MSHADOW_USE_MKL == 1)
 
 #define LINALG_CPU_GEMM(fname, DType) \
@@ -69,14 +74,46 @@ void linalg_gemm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2
                 A.dptr_, A.stride_, B.dptr_, B.stride_, beta, C.dptr_, C.stride_); \
 }
 
-#define LINALG_CPU_BATCH_GEMM(DType) \
+#define LINALG_XPU_BATCH_GEMM(xpu, DType) \
 template<> inline \
-void linalg_batch_gemm<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<cpu, 3, DType>& B, \
-                                   const Tensor<cpu, 3, DType>& C, DType alpha, DType beta, \
-                                   bool tA, bool tB, Stream<cpu> *s) { \
+void linalg_batch_gemm<xpu, DType>(const Tensor<xpu, 3, DType>& A, const Tensor<xpu, 3, DType>& B, \
+                                   const Tensor<xpu, 3, DType>& C, DType alpha, DType beta, \
+                                   bool tA, bool tB, Stream<xpu> *s) { \
   linalg_check_batch_size(A.size(0), B.size(0), C.size(0)); \
   for (index_t i = 0; i < A.size(0); ++i) { \
-    linalg_gemm(A[i], B[i], C[i], alpha, beta, tA, tB); \
+    linalg_gemm(A[i], B[i], C[i], alpha, beta, tA, tB, s); \
+  } \
+}
+
+// Batched gemm where the batch coordinate is given by the second axis.
+#define LINALG_CPU_GEMM_AXIS(fname, DType) \
+template<> inline \
+void linalg_gemm_axis<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<cpu, 3, DType>& B, \
+                                  const Tensor<cpu, 3, DType>& C, DType alpha, DType beta, \
+                                  bool tA, bool tB, Stream<cpu> *s) { \
+  linalg_check_batch_size(A.size(1), B.size(1), C.size(1)); \
+  for (index_t i = 0; i < A.size(1); ++i) { \
+     cblas_##fname(CblasRowMajor, (tA ? CblasTrans : CblasNoTrans), \
+                   (tB ? CblasTrans : CblasNoTrans), \
+                   C.size(0), C.size(2), (tA ? A.size(0) : A.size(2)), alpha, \
+                   A.dptr_+i*A.stride_, A.size(1)*A.stride_, \
+                   B.dptr_+i*B.stride_, B.size(1)*B.stride_, beta, \
+                   C.dptr_+i*C.stride_, C.size(1)*C.stride_); \
+  } \
+}
+
+LINALG_CPU_GEMM_AXIS(sgemm, float)
+LINALG_CPU_GEMM_AXIS(dgemm, double)
+
+// Version where matrix rows are given by the second axis.
+#define LINALG_XPU_BATCH_GEMM_AXIS(xpu, DType) \
+template<> inline \
+void linalg_batch_gemm<xpu, DType>(const Tensor<xpu, 4, DType>& A, const Tensor<xpu, 4, DType>& B, \
+                                   const Tensor<xpu, 4, DType>& C, DType alpha, DType beta, \
+                                   bool tA, bool tB, Stream<xpu> *s) { \
+  linalg_check_batch_size(A.size(0), B.size(0), C.size(0)); \
+  for (index_t i = 0; i < A.size(0); ++i) { \
+    linalg_gemm_axis(A[i], B[i], C[i], alpha, beta, tA, tB, s); \
   } \
 }
 
@@ -90,11 +127,19 @@ void linalg_gemm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2
   LOG(FATAL) << "linalg_gemm (without req arg) not implemented by mxnet for cpu, needs cblas!"; \
 }
 
-#define LINALG_CPU_BATCH_GEMM(DType) \
+#define LINALG_XPU_BATCH_GEMM(xpu, DType) \
 template<> inline \
-void linalg_batch_gemm<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<cpu, 3, DType>& B, \
-                                   const Tensor<cpu, 3, DType>& C, DType alpha, DType beta, \
-                                   bool tA, bool tB, Stream<cpu> *s) { \
+void linalg_batch_gemm<xpu, DType>(const Tensor<xpu, 3, DType>& A, const Tensor<xpu, 3, DType>& B, \
+                                   const Tensor<xpu, 3, DType>& C, DType alpha, DType beta, \
+                                   bool tA, bool tB, Stream<xpu> *s) { \
+  LOG(FATAL) << "linalg_batch_gemm not implemented by mxnet for cpu, needs cblas!"; \
+}
+
+#define LINALG_XPU_BATCH_GEMM_AXIS(xpu, DType) \
+template<> inline \
+void linalg_batch_gemm<xpu, DType>(const Tensor<xpu, 4, DType>& A, const Tensor<xpu, 4, DType>& B, \
+                                   const Tensor<xpu, 4, DType>& C, DType alpha, DType beta, \
+                                   bool tA, bool tB, Stream<xpu> *s) { \
   LOG(FATAL) << "linalg_batch_gemm not implemented by mxnet for cpu, needs cblas!"; \
 }
 
@@ -103,8 +148,11 @@ void linalg_batch_gemm<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<
 LINALG_CPU_GEMM(sgemm, float)
 LINALG_CPU_GEMM(dgemm, double)
 
-LINALG_CPU_BATCH_GEMM(float)
-LINALG_CPU_BATCH_GEMM(double)
+LINALG_XPU_BATCH_GEMM(cpu, float)
+LINALG_XPU_BATCH_GEMM(cpu, double)
+
+LINALG_XPU_BATCH_GEMM_AXIS(cpu, float)
+LINALG_XPU_BATCH_GEMM_AXIS(cpu, double)
 
 // Specialization of linalg_gemm<cpu, DType> for DType=mshadow::half::half_t.
 template<> inline
@@ -119,34 +167,78 @@ void linalg_gemm<cpu, mshadow::half::half_t>(const Tensor<cpu, 2, mshadow::half:
 
 #ifdef __CUDACC__
 
-template<typename DType>
-__global__ void linalgCollectBatchOffsetsGPU(DType *a[], DType* b, int stride, int N) {
-    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < N; i += blockDim.x * gridDim.x) {
-      a[i] = b + i * stride;
-    }
-}
-
 // cublas col-major processing accounted for by switching first two operands
 
-#define LINALG_GPU_GEMM(fname, DType) \
+#define LINALG_GPU_GEMM(fname, DType)                                      \
+  template <>                                                              \
+  inline void linalg_gemm<gpu, DType>(                                     \
+      const Tensor<gpu, 2, DType>& A, const Tensor<gpu, 2, DType>& B,      \
+      const Tensor<gpu, 2, DType>& C, DType alpha, DType beta, bool tA,    \
+      bool tB, Stream<gpu>* s) {                                           \
+    using namespace mxnet;                                                 \
+    using mshadow::gpu;                                                    \
+    CHECK_NOTNULL(s);                                                      \
+    check_gemm(A, B, C, alpha, beta, tA, tB);                              \
+    CUBLAS_CALL(cublas##fname(                                             \
+        Stream<gpu>::GetBlasHandle(s), (tB ? CUBLAS_OP_T : CUBLAS_OP_N),   \
+        (tA ? CUBLAS_OP_T : CUBLAS_OP_N), C.size(1), C.size(0),            \
+        (tB ? B.size(1) : B.size(0)), &alpha, B.dptr_, B.stride_, A.dptr_, \
+        A.stride_, &beta, C.dptr_, C.stride_))                             \
+  }
+
+// Use cublasSgemmEx when it is available (CUDA >= 7.5). Resolves precision issues with
+// cublasSgemm. Please see https://github.com/apache/incubator-mxnet/pull/11630
+#if CUDA_VERSION >= 7050
+template <>
+inline void linalg_gemm<gpu, float>(const Tensor<gpu, 2, float>& A,
+                                    const Tensor<gpu, 2, float>& B,
+                                    const Tensor<gpu, 2, float>& C, float alpha,
+                                    float beta, bool tA, bool tB,
+                                    Stream<gpu>* s) {
+  using namespace mxnet;
+  using mshadow::gpu;
+  CHECK_NOTNULL(s);
+  check_gemm(A, B, C, alpha, beta, tA, tB);
+#if CUDA_VERSION >= 8000
+  cudaDataType_t full_datatype = CUDA_R_32F;
+#else
+  cublasDataType_t full_datatype = CUBLAS_DATA_FULL;
+#endif
+  CUBLAS_CALL(cublasSgemmEx(
+      Stream<gpu>::GetBlasHandle(s), (tB ? CUBLAS_OP_T : CUBLAS_OP_N),
+      (tA ? CUBLAS_OP_T : CUBLAS_OP_N), C.size(1), C.size(0),
+      (tB ? B.size(1) : B.size(0)), &alpha, B.dptr_, full_datatype, B.stride_,
+      A.dptr_, full_datatype, A.stride_, &beta, C.dptr_, full_datatype,
+      C.stride_))
+}
+
+#else
+LINALG_GPU_GEMM(Sgemm, float)
+#endif
+LINALG_GPU_GEMM(Dgemm, double)
+
+// Version where matrix rows are given by first axis.
+#define LINALG_GPU_GEMM_AXIS(fname, DType) \
 template<> inline \
-void linalg_gemm<gpu, DType>(const Tensor<gpu, 2, DType>& A, const Tensor<gpu, 2, DType>& B, \
-                             const Tensor<gpu, 2, DType>& C, DType alpha, DType beta, \
-                             bool tA, bool tB, Stream<gpu> *s) { \
+void linalg_gemm_axis<gpu, DType>(const Tensor<gpu, 3, DType>& A, const Tensor<gpu, 3, DType>& B, \
+                                  const Tensor<gpu, 3, DType>& C, DType alpha, DType beta, \
+                                  bool tA, bool tB, Stream<gpu> *s) { \
   using namespace mxnet; \
   using mshadow::gpu; \
   CHECK_NOTNULL(s); \
-  check_gemm(A, B, C, alpha, beta, tA, tB); \
+  linalg_check_batch_size(A.size(1), B.size(1), C.size(1)); \
   CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
                             (tB ? CUBLAS_OP_T : CUBLAS_OP_N), \
                             (tA ? CUBLAS_OP_T : CUBLAS_OP_N), \
-                            C.size(1), C.size(0), (tB ? B.size(1) : B.size(0)), \
-                            &alpha, B.dptr_, B.stride_, A.dptr_, A.stride_, \
-                            &beta, C.dptr_, C.stride_)) \
+                            C.size(2), C.size(0), (tB ? B.size(2) : B.size(0)), &alpha, \
+                            B.dptr_, B.size(1)*B.stride_, B.stride_, \
+                            A.dptr_, A.size(1)*A.stride_, A.stride_, &beta, \
+                            C.dptr_, C.size(1)*C.stride_, C.stride_, A.size(1))) \
 }
-LINALG_GPU_GEMM(Sgemm, float)
-LINALG_GPU_GEMM(Dgemm, double)
+LINALG_GPU_GEMM_AXIS(SgemmStridedBatched, float)
+LINALG_GPU_GEMM_AXIS(DgemmStridedBatched, double)
 
+// Specialization of linalg_gemm<gpu, DType> for DType=mshadow::half::half_t.
 // Specialization of linalg_gemm<gpu, DType> for DType=mshadow::half::half_t.
 template<> inline
 void linalg_gemm<gpu, mshadow::half::half_t>(const Tensor<gpu, 2, mshadow::half::half_t>& A,
@@ -195,164 +287,112 @@ void linalg_gemm<gpu, mshadow::half::half_t>(const Tensor<gpu, 2, mshadow::half:
 #endif  // CUDA_VERSION >= 7050
 }
 
-
-#define LINALG_GPU_BATCH_GEMM(fname, DType) \
-template<> inline \
-void linalg_batch_gemm<gpu, DType>(const Tensor<gpu, 3, DType>& A, const Tensor<gpu, 3, DType>& B, \
-                                   const Tensor<gpu, 3, DType>& C, DType alpha, DType beta, \
-                                   bool tA, bool tB, Stream<gpu> *s) { \
-  using namespace mxnet; \
-  using mshadow::gpu; \
-  CHECK_NOTNULL(s); \
-  linalg_check_batch_size(A.size(0), B.size(0), C.size(0)); \
-  check_gemm(A[0], B[0], C[0], alpha, beta, tA, tB); \
-  Storage::Handle offsetsA, offsetsB, offsetsC; \
-  offsetsA = Storage::Get()->Alloc(sizeof(DType*)*A.size(0), Context::GPU()); \
-  offsetsB = Storage::Get()->Alloc(sizeof(DType*)*B.size(0), Context::GPU()); \
-  offsetsC = Storage::Get()->Alloc(sizeof(DType*)*C.size(0), Context::GPU()); \
-  using namespace mshadow::cuda; \
-  int ngrid = std::min(kMaxGridNum, \
-                       static_cast<int>((A.size(0) + kBaseThreadNum - 1) / kBaseThreadNum)); \
-  linalgCollectBatchOffsetsGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
-    (static_cast<DType **>(offsetsA.dptr), A.dptr_, A.size(1)*A.stride_, A.size(0)); \
-  linalgCollectBatchOffsetsGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
-    (static_cast<DType **>(offsetsB.dptr), B.dptr_, B.size(1)*B.stride_, B.size(0)); \
-  linalgCollectBatchOffsetsGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
-    (static_cast<DType **>(offsetsC.dptr), C.dptr_, C.size(1)*C.stride_, C.size(0)); \
-  CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
-                            (tB ? CUBLAS_OP_T : CUBLAS_OP_N), \
-                            (tA ? CUBLAS_OP_T : CUBLAS_OP_N), \
-                            C.size(2), C.size(1), (tB ? B.size(2) : B.size(1)), \
-                            &alpha, static_cast<const DType **>(offsetsB.dptr), B.stride_, \
-                            static_cast<const DType **>(offsetsA.dptr),  A.stride_, \
-                            &beta, static_cast<DType **>(offsetsC.dptr), C.stride_, A.size(0))) \
-  Storage::Get()->Free(offsetsA); \
-  Storage::Get()->Free(offsetsB); \
-  Storage::Get()->Free(offsetsC); \
-}
-LINALG_GPU_BATCH_GEMM(SgemmBatched, float)
-LINALG_GPU_BATCH_GEMM(DgemmBatched, double)
-
-#endif  // __CUDACC__
-
-//////////////////////////////// TRSM ////////////////////////////////////////////
-
-// CPU/GPU-versions of BLAS3 function "trsm". Please refer to the BLAS3-documentation
-// for further information about the function and its parameters.
-// Note that this is B = trsm(A,B), so B is input and output parameter.
-
-template<typename xpu, typename DType>
-inline void check_trsm(const Tensor<xpu, 2, DType>& A, const Tensor<xpu, 2, DType>& B,
-                DType alpha, bool rightside, bool lower, bool transpose) {
-  // Any checking that helps user debug potential problems.
-  CHECK_EQ(A.size(0), A.size(1))
-    << "First input of trsm is not a square matrix.";
-  CHECK(!rightside || (B.size(1) == A.size(0)))
-    << "Non compatible matrix dimensions between inputs A and B for trsm";
-  CHECK(rightside || (B.size(0) == A.size(1)))
-    << "Non compatible matrix dimensions between inputs A and B for trsm";
-}
-
-#if (MSHADOW_USE_CBLAS == 1 || MSHADOW_USE_MKL == 1)
-
-#define LINALG_CPU_TRSM(fname, DType) \
-template<> inline \
-void linalg_trsm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2, DType>& B, \
-                 DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
-  check_trsm(A, B, alpha, rightside, lower, transpose); \
-  cblas_##fname(CblasRowMajor, (rightside ? CblasRight : CblasLeft), \
-                (lower ? CblasLower : CblasUpper), (transpose ? CblasTrans : CblasNoTrans), \
-                CblasNonUnit, B.size(0), B.size(1), alpha, A.dptr_, \
-                A.stride_, B.dptr_, B.stride_); \
-}
-
-#define LINALG_CPU_BATCH_TRSM(DType) \
-template<> inline \
-void linalg_batch_trsm<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<cpu, 3, DType>& B, \
-                   DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
-  linalg_check_batch_size(A.size(0), B.size(0), B.size(0)); \
-  for (index_t i = 0; i < A.size(0); ++i) { \
-    linalg_trsm(A[i], B[i], alpha, rightside, lower, transpose); \
-  } \
-}
-
+// As of cuda8, cublas has implemented a strided version of batch gemm.
+#if CUDA_VERSION < 8000
+  LINALG_XPU_BATCH_GEMM(gpu, float)
+  LINALG_XPU_BATCH_GEMM(gpu, double)
+  LINALG_XPU_BATCH_GEMM_AXIS(gpu, float)
+  LINALG_XPU_BATCH_GEMM_AXIS(gpu, double)
 #else
+#define LINALG_GPU_BATCH_GEMM(fname, DType) \
+  template<> inline \
+  void linalg_batch_gemm<gpu, DType>(const Tensor<gpu, 3, DType>& A, \
+                                     const Tensor<gpu, 3, DType>& B, \
+                                     const Tensor<gpu, 3, DType>& C, DType alpha, DType beta, \
+                                     bool tA, bool tB, Stream<gpu> *s) { \
+    using namespace mxnet; \
+    using mshadow::gpu; \
+    CHECK_NOTNULL(s); \
+    linalg_check_batch_size(A.size(0), B.size(0), C.size(0)); \
+    check_gemm(A[0], B[0], C[0], alpha, beta, tA, tB); \
+    using namespace mshadow::cuda; \
+    CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
+                              (tB ? CUBLAS_OP_T : CUBLAS_OP_N), \
+                              (tA ? CUBLAS_OP_T : CUBLAS_OP_N), \
+                              C.size(2), C.size(1), (tB ? B.size(2) : B.size(1)), \
+                              &alpha, B.dptr_, B.stride_, B.size(1) * B.stride_, \
+                              A.dptr_,  A.stride_, A.size(1) * A.stride_, \
+                              &beta, C.dptr_, C.stride_, C.size(1) * C.stride_, A.size(0))) \
+  }
 
-#define LINALG_CPU_TRSM(fname, DType) \
-template<> inline \
-void linalg_trsm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2, DType>& B, \
-                 DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
-  LOG(FATAL) << "linalg_trsm not implemented, needs cblas!"; \
-}
+  LINALG_GPU_BATCH_GEMM(DgemmStridedBatched, double)
 
-#define LINALG_CPU_BATCH_TRSM(DType) \
-template<> inline \
-void linalg_batch_trsm<cpu, DType>(const Tensor<cpu, 3, DType>& A, const Tensor<cpu, 3, DType>& B, \
-                   DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
-  LOG(FATAL) << "linalg_batch_trsm not implemented, needs cblas!"; \
-}
+  #if CUDA_VERSION < 9010
+  LINALG_GPU_BATCH_GEMM(SgemmStridedBatched, float)
+  #else
+    template <>
+    inline void linalg_batch_gemm<gpu, float>(const Tensor<gpu, 3, float>& A,
+                                              const Tensor<gpu, 3, float>& B,
+                                              const Tensor<gpu, 3, float>& C,
+                                              float alpha, float beta, bool tA,
+                                              bool tB, Stream<gpu>* s) {
+      using namespace mxnet;
+      using mshadow::gpu;
+      CHECK_NOTNULL(s);
+      linalg_check_batch_size(A.size(0), B.size(0), C.size(0));
+      check_gemm(A[0], B[0], C[0], alpha, beta, tA, tB);
+      auto blas_handle = Stream<gpu>::GetBlasHandle(s);
+      bool use_tensor_ops =
+          GetEnvAllowTensorCore() && GetEnvAllowTensorCoreConversion();
 
-#endif  // MSHADOW_USE_CBLAS == 1 || MSHADOW_USE_MKL == 1
+      using namespace mshadow::cuda;
+      auto cublas_math_mode =
+          use_tensor_ops ? CUBLAS_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
+      auto previous_math_mode = SetCublasMathMode(blas_handle, cublas_math_mode);
 
-LINALG_CPU_TRSM(strsm, float)
-LINALG_CPU_TRSM(dtrsm, double)
+      // cublasGemmStridedBatchedEx is only supported for GPU with architecture
+      // capabilities equal or greater than 5.0. Fall back to
+      // cublasSgemmStridedBatched, which doesn't support implicit conversion
+      // to half-precision to use TensorCores
+      auto cc_major = (s->prop).major;
+      if ((cc_major >= 5) && use_tensor_ops) {
+        CUBLAS_CALL(cublasGemmStridedBatchedEx(
+            blas_handle, (tB ? CUBLAS_OP_T : CUBLAS_OP_N),
+            (tA ? CUBLAS_OP_T : CUBLAS_OP_N), C.size(2), C.size(1),
+            (tB ? B.size(2) : B.size(1)), &alpha, B.dptr_, CUDA_R_32F,
+            B.stride_, B.size(1) * B.stride_, A.dptr_, CUDA_R_32F, A.stride_,
+            A.size(1) * A.stride_, &beta, C.dptr_, CUDA_R_32F, C.stride_,
+            C.size(1) * C.stride_, A.size(0), CUDA_R_32F,
+            CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+      } else {
+        CUBLAS_CALL(cublasSgemmStridedBatched(
+            blas_handle, (tB ? CUBLAS_OP_T : CUBLAS_OP_N),
+            (tA ? CUBLAS_OP_T : CUBLAS_OP_N), C.size(2), C.size(1),
+            (tB ? B.size(2) : B.size(1)), &alpha, B.dptr_, B.stride_,
+            B.size(1) * B.stride_, A.dptr_, A.stride_, A.size(1) * A.stride_,
+            &beta, C.dptr_, C.stride_, C.size(1) * C.stride_, A.size(0)));
+      }
+      SetCublasMathMode(blas_handle, previous_math_mode);
+    }
+  #endif  // CUDA_VERSION < 9010
 
-LINALG_CPU_BATCH_TRSM(float)
-LINALG_CPU_BATCH_TRSM(double)
+// Version where matrix rows are given by second axis.
+#define LINALG_GPU_BATCH_GEMM_AXIS(fname, DType) \
+  template<> inline \
+  void linalg_batch_gemm<gpu, DType>(const Tensor<gpu, 4, DType>& A, \
+                                     const Tensor<gpu, 4, DType>& B, \
+                                     const Tensor<gpu, 4, DType>& C, DType alpha, DType beta, \
+                                     bool tA, bool tB, Stream<gpu> *s) { \
+    using namespace mxnet; \
+    using mshadow::gpu; \
+    CHECK_NOTNULL(s); \
+    linalg_check_batch_size(A.size(0), B.size(0), C.size(0)); \
+    linalg_check_batch_size(A.size(2), B.size(2), C.size(2)); \
+    for (index_t i = 0; i < A.size(2); ++i) { \
+      CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
+          (tB ? CUBLAS_OP_T : CUBLAS_OP_N), \
+          (tA ? CUBLAS_OP_T : CUBLAS_OP_N), \
+          C.size(3), C.size(1), (tB ? B.size(3) : B.size(1)), &alpha, \
+          B.dptr_+i*B.stride_, B.size(2) * B.stride_, B.size(1)*B.size(2)*B.stride_, \
+          A.dptr_+i*A.stride_, A.size(2) * A.stride_, A.size(1)*A.size(2)*A.stride_, &beta, \
+          C.dptr_+i*C.stride_, C.size(2) * C.stride_, C.size(1)*C.size(2)*C.stride_, A.size(0))) \
+    }\
+  }
 
-#ifdef __CUDACC__
+  LINALG_GPU_BATCH_GEMM_AXIS(SgemmStridedBatched, float)
+  LINALG_GPU_BATCH_GEMM_AXIS(DgemmStridedBatched, double)
 
-// cublas col-major processing accounted for by switching sides and fill mode
-
-#define LINALG_GPU_TRSM(fname, DType) \
-template<> inline \
-void linalg_trsm<gpu, DType>(const Tensor<gpu, 2, DType>& A, const Tensor<gpu, 2, DType>& B, \
-                 DType alpha, bool rightside, bool lower, bool transpose, Stream<gpu> *s) { \
-  using namespace mxnet; \
-  using mshadow::gpu; \
-  CHECK_NOTNULL(s); \
-  check_trsm(A, B, alpha, rightside, lower, transpose); \
-  CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
-                            (rightside ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT), \
-                            (lower ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER), \
-                            (transpose ? CUBLAS_OP_T : CUBLAS_OP_N), \
-                            CUBLAS_DIAG_NON_UNIT, B.size(1), B.size(0), &alpha, \
-                            A.dptr_, A.stride_, B.dptr_, B.stride_)); \
-}
-LINALG_GPU_TRSM(Strsm, float)
-LINALG_GPU_TRSM(Dtrsm, double)
-
-#define LINALG_GPU_BATCH_TRSM(fname, DType) \
-template<> inline \
-void linalg_batch_trsm<gpu, DType>(const Tensor<gpu, 3, DType>& A, const Tensor<gpu, 3, DType>& B, \
-                   DType alpha, bool rightside, bool lower, bool transpose, Stream<gpu> *s) { \
-  using namespace mxnet; \
-  using mshadow::gpu; \
-  CHECK_NOTNULL(s); \
-  linalg_check_batch_size(A.size(0), B.size(0), B.size(0)); \
-  check_trsm(A[0], B[0], alpha, rightside, lower, transpose); \
-  Storage::Handle offsetsA, offsetsB; \
-  offsetsA = Storage::Get()->Alloc(sizeof(DType*)*A.size(0), Context::GPU()); \
-  offsetsB = Storage::Get()->Alloc(sizeof(DType*)*B.size(0), Context::GPU()); \
-  using namespace mshadow::cuda; \
-  int ngrid = std::min(kMaxGridNum, \
-                       static_cast<int>((A.size(0) + kBaseThreadNum - 1) / kBaseThreadNum)); \
-  linalgCollectBatchOffsetsGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
-    (static_cast<DType **>(offsetsA.dptr), A.dptr_, A.size(1)*A.stride_, A.size(0)); \
-  linalgCollectBatchOffsetsGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
-    (static_cast<DType **>(offsetsB.dptr), B.dptr_, B.size(1)*B.stride_, A.size(0)); \
-  CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
-                            (rightside ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT), \
-                            (lower ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER), \
-                            (transpose ? CUBLAS_OP_T : CUBLAS_OP_N), \
-                            CUBLAS_DIAG_NON_UNIT, B.size(2), B.size(1), &alpha, \
-                            static_cast<const DType **>(offsetsA.dptr), A.stride_, \
-                            static_cast<DType **>(offsetsB.dptr), B.stride_, A.size(0))); \
-  Storage::Get()->Free(offsetsA); \
-  Storage::Get()->Free(offsetsB); \
-}
-LINALG_GPU_BATCH_TRSM(StrsmBatched, float)
-LINALG_GPU_BATCH_TRSM(DtrsmBatched, double)
+#endif  // CUDA < 8000
 
 #endif  // __CUDACC__
 
@@ -444,6 +484,98 @@ LINALG_CPU_GEMM_NO_CBLAS(float)
 LINALG_CPU_GEMM_NO_CBLAS(double)
 
 #endif  // (MSHADOW_USE_CBLAS == 0 && MSHADOW_USE_MKL == 0)
+
+//////////////////////////////// TRSM ////////////////////////////////////////////
+
+// CPU/GPU-versions of BLAS3 function "trsm". Please refer to the BLAS3-documentation
+// for further information about the function and its parameters.
+// Note that this is B = trsm(A,B), so B is input and output parameter.
+
+template<typename xpu, typename DType>
+inline void check_trsm(const Tensor<xpu, 2, DType>& A, const Tensor<xpu, 2, DType>& B,
+                DType alpha, bool rightside, bool lower, bool transpose) {
+  // Any checking that helps user debug potential problems.
+  CHECK_EQ(A.size(0), A.size(1))
+    << "First input of trsm is not a square matrix.";
+  CHECK(!rightside || (B.size(1) == A.size(0)))
+    << "Non compatible matrix dimensions between inputs A and B for trsm";
+  CHECK(rightside || (B.size(0) == A.size(1)))
+    << "Non compatible matrix dimensions between inputs A and B for trsm";
+}
+
+#if (MSHADOW_USE_CBLAS == 1 || MSHADOW_USE_MKL == 1)
+
+#define LINALG_CPU_TRSM(fname, DType) \
+template<> inline \
+void linalg_trsm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2, DType>& B, \
+                 DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
+  check_trsm(A, B, alpha, rightside, lower, transpose); \
+  cblas_##fname(CblasRowMajor, (rightside ? CblasRight : CblasLeft), \
+                (lower ? CblasLower : CblasUpper), (transpose ? CblasTrans : CblasNoTrans), \
+                CblasNonUnit, B.size(0), B.size(1), alpha, A.dptr_, \
+                A.stride_, B.dptr_, B.stride_); \
+}
+
+#define LINALG_XPU_BATCH_TRSM(xpu, DType) \
+template<> inline \
+void linalg_batch_trsm<xpu, DType>(const Tensor<xpu, 3, DType>& A, const Tensor<xpu, 3, DType>& B, \
+                   DType alpha, bool rightside, bool lower, bool transpose, Stream<xpu> *s) { \
+  linalg_check_batch_size(A.size(0), B.size(0), B.size(0)); \
+  for (index_t i = 0; i < A.size(0); ++i) { \
+    linalg_trsm(A[i], B[i], alpha, rightside, lower, transpose, s); \
+  } \
+}
+
+#else
+
+#define LINALG_CPU_TRSM(fname, DType) \
+template<> inline \
+void linalg_trsm<cpu, DType>(const Tensor<cpu, 2, DType>& A, const Tensor<cpu, 2, DType>& B, \
+                 DType alpha, bool rightside, bool lower, bool transpose, Stream<cpu> *s) { \
+  LOG(FATAL) << "linalg_trsm not implemented, needs cblas!"; \
+}
+
+#define LINALG_XPU_BATCH_TRSM(xpu, DType) \
+template<> inline \
+void linalg_batch_trsm<xpu, DType>(const Tensor<xpu, 3, DType>& A, const Tensor<xpu, 3, DType>& B, \
+                   DType alpha, bool rightside, bool lower, bool transpose, Stream<xpu> *s) { \
+  LOG(FATAL) << "linalg_batch_trsm not implemented, needs cblas!"; \
+}
+
+#endif  // MSHADOW_USE_CBLAS == 1 || MSHADOW_USE_MKL == 1
+
+LINALG_CPU_TRSM(strsm, float)
+LINALG_CPU_TRSM(dtrsm, double)
+
+LINALG_XPU_BATCH_TRSM(cpu, float)
+LINALG_XPU_BATCH_TRSM(cpu, double)
+
+#ifdef __CUDACC__
+
+// cublas col-major processing accounted for by switching sides and fill mode
+
+#define LINALG_GPU_TRSM(fname, DType) \
+template<> inline \
+void linalg_trsm<gpu, DType>(const Tensor<gpu, 2, DType>& A, const Tensor<gpu, 2, DType>& B, \
+                 DType alpha, bool rightside, bool lower, bool transpose, Stream<gpu> *s) { \
+  using namespace mxnet; \
+  using mshadow::gpu; \
+  CHECK_NOTNULL(s); \
+  check_trsm(A, B, alpha, rightside, lower, transpose); \
+  CUBLAS_CALL(cublas##fname(Stream<gpu>::GetBlasHandle(s), \
+                            (rightside ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT), \
+                            (lower ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER), \
+                            (transpose ? CUBLAS_OP_T : CUBLAS_OP_N), \
+                            CUBLAS_DIAG_NON_UNIT, B.size(1), B.size(0), &alpha, \
+                            A.dptr_, A.stride_, B.dptr_, B.stride_)); \
+}
+LINALG_GPU_TRSM(Strsm, float)
+LINALG_GPU_TRSM(Dtrsm, double)
+
+LINALG_XPU_BATCH_TRSM(gpu, float)
+LINALG_XPU_BATCH_TRSM(gpu, double)
+
+#endif  // __CUDACC__
 
 //////////////////////////////// TRMM ////////////////////////////////////////////
 
@@ -537,6 +669,9 @@ LINALG_XPU_BATCH_TRMM(gpu, double)
 // for further information about the function and its parameters.
 // Note that this is A = potrf(A), so A is input and output parameter.
 
+static const char *potrf_errstr
+  = "This may happen when the input matrix is either not symmetric or not positive definite.";
+
 template<typename xpu, typename DType>
 inline void check_potrf(const Tensor<xpu, 2, DType>& A, bool lower) {
   // Any checking that helps user debug potential problems.
@@ -550,7 +685,7 @@ void linalg_potrf<cpu, DType>(const Tensor<cpu, 2, DType>& A, bool lower, Stream
   check_potrf(A, lower); \
   int ret(MXNET_LAPACK_##fname(MXNET_LAPACK_ROW_MAJOR, (lower ? 'L' : 'U'), A.size(0),  \
           A.dptr_ , A.stride_)); \
-  CHECK_EQ(ret, 0) << #fname << " failed in lapack on cpu."; \
+  CHECK_EQ(ret, 0) << #fname << " failed in lapack on cpu. " << potrf_errstr; \
 }
 LINALG_CPU_POTRF(spotrf, float)
 LINALG_CPU_POTRF(dpotrf, double)
@@ -632,6 +767,10 @@ LINALG_GPU_BATCH_POTRF(DnDpotrf, double)
 // for further information about the function and its parameters.
 // Note that this is A = potri(A), so A is input and output parameter.
 
+static const char *potri_errstr
+  = "This may happen when the input matrix is not a Cholesky factorization obtained"
+    " by a prior call of the potrf-operator.";
+
 template<typename xpu, typename DType>
 inline void check_potri(const Tensor<xpu, 2, DType>& A, bool lower) {
   // Any checking that helps user debug potential problems.
@@ -644,7 +783,7 @@ void linalg_potri<cpu, DType>(const Tensor<cpu, 2, DType>& A, bool lower, Stream
   check_potri(A, lower); \
   int ret(MXNET_LAPACK_##fname(MXNET_LAPACK_ROW_MAJOR, (lower ? 'L' : 'U'), A.size(0),  \
           A.dptr_ , A.stride_)); \
-  CHECK_EQ(ret, 0) << #fname << " failed in lapack on cpu."; \
+  CHECK_EQ(ret, 0) << #fname << " failed in lapack on cpu. " << potri_errstr; \
 }
 LINALG_CPU_POTRI(spotri, float)
 LINALG_CPU_POTRI(dpotri, double)
@@ -684,6 +823,7 @@ void linalg_potri<gpu, DType>(const Tensor<gpu, 2, DType>& A, bool lower, Stream
                        static_cast<int>((A.MSize() + kBaseThreadNum - 1) / kBaseThreadNum)); \
   linalgInitIdentityGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
     (static_cast<DType *>(buffer.dptr), A.MSize(), A.stride_, A.MSize());  \
+  MSHADOW_CUDA_POST_KERNEL_CHECK(linalgInitIdentityGPU); \
   Tensor<gpu, 2, DType> B((DType *)buffer.dptr, A.shape_, A.stride_, s); \
   linalg_trsm(A, B, DType(1.0), false, lower, !lower, s); \
   linalg_trsm(A, B, DType(1.0), false, lower, lower, s); \
@@ -707,6 +847,7 @@ void linalg_batch_potri<gpu, DType>(const Tensor<gpu, 3, DType>& A, bool lower, 
                        static_cast<int>((A.MSize() + kBaseThreadNum - 1) / kBaseThreadNum)); \
   linalgInitIdentityGPU<<<ngrid, kBaseThreadNum, 0, mshadow::Stream<gpu>::GetStream(s)>>> \
     (static_cast<DType *>(buffer.dptr), A.size(1)*A.stride_, A.stride_, A.MSize()); \
+  MSHADOW_CUDA_POST_KERNEL_CHECK(linalgInitIdentityGPU); \
   Tensor<gpu, 3, DType> B((DType *)buffer.dptr, A.shape_, A.stride_, s); \
   linalg_batch_trsm(A, B, DType(1.0), false, lower, !lower, s); \
   linalg_batch_trsm(A, B, DType(1.0), false, lower, lower, s); \
